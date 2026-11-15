@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trade-offs and path to scale</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2457D6}a:hover{color:#1A3FA0}
+</style>
+</helmet>
+<div style="width: 1280px; height: 960px; box-sizing: border-box; padding: 56px 64px; display: flex; flex-direction: column; gap: 28px; background: #F7F7F5; color: #16181D; font-family: Inter, system-ui, sans-serif">
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.01em">Trade-offs and path to scale</h1>
+<div style="display: flex; flex-direction: column; gap: 12px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Deliberate trade-offs</h2>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px">
+<div style="font-size: 14px; line-height: 21px; color: #3F4450"><b style="color: #16181D">Zero dependencies, one process.</b> Nothing to install and a single system to reason about. Polling is sufficient at single-workstation scale.</div>
+<div style="font-size: 14px; line-height: 21px; color: #3F4450"><b style="color: #16181D">Agents outlive the control plane.</b> No work is ever lost to a restart. During an extended outage, spend caps remain the guardrail.</div>
+<div style="font-size: 14px; line-height: 21px; color: #3F4450"><b style="color: #16181D">Agent-agnostic question protocol.</b> Works with any headless agent, and depends on the agent following it. Detecting free-form questions is on the roadmap.</div>
+<div style="font-size: 14px; line-height: 21px; color: #3F4450"><b style="color: #16181D">Independent verification.</b> Results never rest on the agent's own claims. Verification of the merged result comes next.</div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 12px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Scaling to a team: ten engineers, hundreds of runs a day</h2>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px">
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8A3A0B">Single host → distributed workers</div>
+<div style="font-size: 14px; line-height: 20px; color: #3F4450">Workers speak the same runner and event-log protocol, with logs streamed to central storage and runs placed by available capacity.</div>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8A3A0B">Process checks → leases</div>
+<div style="font-size: 14px; line-height: 20px; color: #3F4450">Postgres with heartbeat leases replaces local process checks. The same compare-and-set transitions carry over unchanged.</div>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8A3A0B">Merge buttons → merge queue</div>
+<div style="font-size: 14px; line-height: 20px; color: #3F4450">At volume, the target moves constantly. A queue rebases, verifies the merged result and lands one change at a time.</div>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8A3A0B">Single user → identity</div>
+<div style="font-size: 14px; line-height: 20px; color: #3F4450">Authentication, run ownership, handoff between engineers and a complete audit trail of every merge.</div>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8A3A0B">Polling → event streaming</div>
+<div style="font-size: 14px; line-height: 20px; color: #3F4450">Server-sent events with per-run deltas, and mobile push triggered by the same attention transition.</div>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8A3A0B">Local disk → managed storage</div>
+<div style="font-size: 14px; line-height: 20px; color: #3F4450">Sparse checkouts and a shared object store, with quotas enforced before capacity is exhausted, not after.</div>
+</div>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Roadmap: next</h2>
+<ul style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 23px; color: #3F4450">
+<li>Verification of the merged result, then policy-gated auto-merge</li>
+<li>Detection of free-form agent questions</li>
+<li>Full-text search across every transcript</li>
+<li>Reusable workflows: define once, run against any repository</li>
+</ul>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Roadmap: revisit</h2>
+<ul style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 23px; color: #3F4450">
+<li>Event streaming in place of polling</li>
+<li>Agent-authored commit messages</li>
+<li>Sandboxed execution for agents and verification</li>
+<li>A short activity history alongside the current state</li>
+</ul>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":960}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

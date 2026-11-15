@@ -49,6 +49,40 @@ python3 -m unittest discover -s tests
 
 Settings (environment variables): `CONDUCTOR_PORT` (7700), `CONDUCTOR_MAX_PARALLEL` (4), `CONDUCTOR_BUDGET_USD` (5, the per-attempt default), `CONDUCTOR_STALL_SECS` (180), `CONDUCTOR_MAX_RUN_SECS` (3600), `CONDUCTOR_TEST_TIMEOUT_SECS` (600), `CONDUCTOR_CLAUDE_BIN`.
 
+## Field test on a real project
+
+The [more-itertools field test](docs/field-test-more-itertools.md) gave five real Claude Code agents a five-task sprint. The result: 5 of 5 merged and $3.47 spent. To repeat it on your machine, start with the clone:
+
+```bash
+git clone https://github.com/more-itertools/more-itertools ~/src/more-itertools
+```
+
+Then start the conductor with its own data directory:
+
+```bash
+CONDUCTOR_HOME=~/.conductor-fieldtest CONDUCTOR_MAX_PARALLEL=5 ./conductor.sh
+```
+
+In a second terminal, create the five runs. They use real Claude Code, about $2 cap each; add `--agent fake` for a run that spends nothing:
+
+```bash
+python3 scripts/field-test/create_runs.py ~/src/more-itertools
+```
+
+Watch the board at http://127.0.0.1:7700, or in the terminal:
+
+```bash
+python3 scripts/field-test/board.py
+```
+
+Things to try while it runs:
+- `kill -9` the conductor mid-run and start it again.
+- Answer questions.
+- Review and merge.
+- Use **Ask agent to resolve conflicts** when the changelog edits collide.
+
+Merges go only to your local clone's `master`.
+
 ## Architecture
 
 ```

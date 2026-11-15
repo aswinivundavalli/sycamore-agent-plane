@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Conductor architecture</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2457D6}a:hover{color:#1A3FA0}
+</style>
+</helmet>
+<div style="position: relative; width: 1280px; height: 760px; background: #F7F7F5; color: #16181D; font-family: Inter, system-ui, sans-serif">
+<svg role="img" aria-label="From the web console to the API and service layer" width="95" height="8" viewBox="0 0 95 8" preserveAspectRatio="none" style="position: absolute; left: 272px; top: 244px; width: 95px; height: 8px; overflow: visible; fill: none; stroke: #6B7080; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-1" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#6B7080" stroke="none" style="stroke: none; fill: #6B7080; fill: context-stroke"/></marker></defs><path d="M 0 4 L 91 4" marker-end="url(#dc-arrow-head-filled-1)"></path></svg>
+<svg role="img" aria-label="From the API and service layer to SQLite, compare-and-set writes" width="95" height="8" viewBox="0 0 95 8" preserveAspectRatio="none" style="position: absolute; left: 592px; top: 244px; width: 95px; height: 8px; overflow: visible; fill: none; stroke: #6B7080; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-2" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#6B7080" stroke="none" style="stroke: none; fill: #6B7080; fill: context-stroke"/></marker></defs><path d="M 0 4 L 91 4" marker-end="url(#dc-arrow-head-filled-2)"></path></svg>
+<svg role="img" aria-label="From the supervisor to SQLite, compare-and-set writes" width="95" height="8" viewBox="0 0 95 8" preserveAspectRatio="none" style="position: absolute; left: 897px; top: 244px; width: 95px; height: 8px; overflow: visible; fill: none; stroke: #6B7080; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-3" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#6B7080" stroke="none" style="stroke: none; fill: #6B7080; fill: context-stroke"/></marker></defs><path d="M 95 4 L 4 4" marker-end="url(#dc-arrow-head-filled-3)"></path></svg>
+<svg role="img" aria-label="From the supervisor down to the runner, which it launches" width="8" height="127" viewBox="0 0 8 127" preserveAspectRatio="none" style="position: absolute; left: 1100px; top: 296px; width: 8px; height: 127px; overflow: visible; fill: none; stroke: #6B7080; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-4" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#6B7080" stroke="none" style="stroke: none; fill: #6B7080; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 123" marker-end="url(#dc-arrow-head-filled-4)"></path></svg>
+<svg role="img" aria-label="From the runner to the coding agent, which it owns" width="95" height="8" viewBox="0 0 95 8" preserveAspectRatio="none" style="position: absolute; left: 897px; top: 468px; width: 95px; height: 8px; overflow: visible; fill: none; stroke: #6B7080; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-5" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#6B7080" stroke="none" style="stroke: none; fill: #6B7080; fill: context-stroke"/></marker></defs><path d="M 95 4 L 4 4" marker-end="url(#dc-arrow-head-filled-5)"></path></svg>
+<svg role="img" aria-label="From the coding agent to its event log" width="95" height="8" viewBox="0 0 95 8" preserveAspectRatio="none" style="position: absolute; left: 593px; top: 468px; width: 95px; height: 8px; overflow: visible; fill: none; stroke: #6B7080; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-6" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#6B7080" stroke="none" style="stroke: none; fill: #6B7080; fill: context-stroke"/></marker></defs><path d="M 95 4 L 4 4" marker-end="url(#dc-arrow-head-filled-6)"></path></svg>
+<svg role="img" aria-label="From the coding agent down to its isolated worktree, which it edits" width="8" height="79" viewBox="0 0 8 79" preserveAspectRatio="none" style="position: absolute; left: 788px; top: 520px; width: 8px; height: 79px; overflow: visible; fill: none; stroke: #6B7080; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-7" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#6B7080" stroke="none" style="stroke: none; fill: #6B7080; fill: context-stroke"/></marker></defs><path d="M 4 0 L 4 75" marker-end="url(#dc-arrow-head-filled-7)"></path></svg>
+<div style="position: absolute; left: 64px; top: 64px; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.01em">System architecture</div>
+<div style="position: absolute; left: 64px; top: 112px; width: 1100px; font-size: 16px; line-height: 24px; color: #3F4450">A single service with zero third-party dependencies, and SQLite as the system of record. Agent processes are decoupled from the control plane by design.</div>
+<div style="position: absolute; left: 64px; top: 200px; width: 208px; height: 96px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #FFFFFF; border: 1px solid #D5D7DE; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>Web console</b><br>live board, review, decisions</span></div>
+<div style="position: absolute; left: 368px; top: 200px; width: 224px; height: 96px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #FFFFFF; border: 1px solid #D5D7DE; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>API and service layer</b><br>validated actions, per-run locking</span></div>
+<div style="position: absolute; left: 688px; top: 200px; width: 208px; height: 96px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #E3EAFB; border: 1px solid #A9BCEB; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>SQLite</b><br>runs and events, WAL mode</span></div>
+<div style="position: absolute; left: 992px; top: 200px; width: 224px; height: 96px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #FFFFFF; border: 1px solid #D5D7DE; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>Supervisor</b><br>scheduling, monitoring, recovery</span></div>
+<div style="position: absolute; left: 368px; top: 424px; width: 224px; height: 96px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #FFFFFF; border: 1px dashed #A3A7B3; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>Event log and exit record</b><br>ingested from a committed offset</span></div>
+<div style="position: absolute; left: 688px; top: 424px; width: 208px; height: 96px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #FFFFFF; border: 1px solid #D5D7DE; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>Coding agent</b><br>headless, with a spend cap</span></div>
+<div style="position: absolute; left: 992px; top: 424px; width: 224px; height: 96px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #FFFFFF; border: 1px solid #D5D7DE; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>Runner</b><br>detached, isolated process group</span></div>
+<div style="position: absolute; left: 688px; top: 600px; width: 208px; height: 80px; box-sizing: border-box; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; background: #FFFFFF; border: 1px solid #D5D7DE; border-radius: 12px; font-size: 15px; line-height: 22px"><span><b>Isolated worktree</b><br>one branch per run</span></div>
+<div style="position: absolute; left: 64px; top: 424px; width: 240px; height: 256px; box-sizing: border-box; padding: 20px; background: #FDECC8; border-radius: 12px; font-size: 14px; line-height: 21px; color: #4A2E05"><b>Process isolation</b><br>Conductor never holds an agent's output pipe, so agents continue uninterrupted if the control plane exits. On restart, the supervisor resumes each event log from its last committed offset and verifies process identity before re-attaching.</div>
+<div style="position: absolute; left: 282px; top: 220px; width: 76px; text-align: center; font-size: 13px; line-height: 16px; color: #5A5F6B">JSON API</div>
+<div style="position: absolute; left: 620px; top: 220px; width: 40px; text-align: center; font-size: 13px; line-height: 16px; color: #5A5F6B">CAS</div>
+<div style="position: absolute; left: 924px; top: 220px; width: 40px; text-align: center; font-size: 13px; line-height: 16px; color: #5A5F6B">CAS</div>
+<div style="position: absolute; left: 1116px; top: 351px; width: 112px; font-size: 13px; line-height: 16px; color: #5A5F6B">launches</div>
+<div style="position: absolute; left: 908px; top: 484px; width: 72px; text-align: center; font-size: 13px; line-height: 16px; color: #5A5F6B">owns</div>
+<div style="position: absolute; left: 612px; top: 484px; width: 56px; text-align: center; font-size: 13px; line-height: 16px; color: #5A5F6B">events</div>
+<div style="position: absolute; left: 804px; top: 551px; width: 44px; font-size: 13px; line-height: 16px; color: #5A5F6B">edits</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":760}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

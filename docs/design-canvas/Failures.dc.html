@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Failure modes and recovery</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2457D6}a:hover{color:#1A3FA0}
+</style>
+</helmet>
+<div style="width: 1280px; height: 960px; box-sizing: border-box; padding: 56px 64px; display: flex; flex-direction: column; gap: 20px; background: #F7F7F5; color: #16181D; font-family: Inter, system-ui, sans-serif">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.01em">Failure modes and recovery</h1>
+<p style="margin: 0; font-size: 16px; line-height: 24px; color: #3F4450">Every failure mode has a defined response and automated test coverage. Three rules apply throughout: preserve the record, never infer what cannot be verified, and never resume work without an explicit decision.</p>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column">
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; background: #EEEFF2; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #4A4F5C">
+<div>Failure mode</div>
+<div>System response</div>
+<div>Operator experience</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Control plane terminated, including kill -9</div>
+<div style="color: #3F4450">Agents continue under their detached runners. On restart, each event log resumes from its last committed offset once process identity is verified.</div>
+<div style="color: #3F4450">A brief reconnection notice, then every run exactly as it was. The timeline records the re-attachment.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Agent lost during the outage</div>
+<div style="color: #3F4450">With no exit record and no live process, the run is marked interrupted. Partial work is committed to its branch.</div>
+<div style="color: #3F4450">Surfaced for a decision. Restart resumes the agent's original session with full context.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Agent completed during the outage</div>
+<div style="color: #3F4450">The exit record is reconciled on restart; verification runs as normal.</div>
+<div style="color: #3F4450">The run appears ready for review.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Outage during launch or verification</div>
+<div style="color: #3F4450">During launch, the run is marked interrupted rather than relaunched, since the agent may already have begun. Verification is idempotent and simply re-runs.</div>
+<div style="color: #3F4450">A restart decision, or a test result moments later.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Agent error or spend cap reached</div>
+<div style="color: #3F4450">Marked failed, with partial work preserved for inspection. Budgets apply per run, so a restart receives only the remaining allowance.</div>
+<div style="color: #3F4450">A clear failure reason, such as “Budget cap reached”, alongside the work so far.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Agent stalled or looping</div>
+<div style="color: #3F4450">Flagged as stalled after a configurable silence. Past the run-time ceiling, the process group is terminated and the run marked failed.</div>
+<div style="color: #3F4450">Escalated in the attention ranking, then a timeout reason.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Concurrent or duplicate requests</div>
+<div style="color: #3F4450">Every action is a compare-and-set on the run's current state; exactly one request succeeds.</div>
+<div style="color: #3F4450">Duplicates receive a precise conflict response; nothing happens twice.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Outage between merge and record</div>
+<div style="color: #3F4450">The merge is written before it is recorded. Retrying is a no-op, because the branch is already contained in the target.</div>
+<div style="color: #3F4450">The retry succeeds, with no duplicate merge commit.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Uncommitted changes on the target</div>
+<div style="color: #3F4450">The merge is declined. When the target is not checked out, merges are composed in Git's object store and never touch the working copy.</div>
+<div style="color: #3F4450">An actionable message naming the branch and the next step.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Unresolved conflict markers</div>
+<div style="color: #3F4450">Git would merge them as clean text, so every branch is scanned for markers before merge.</div>
+<div style="color: #3F4450">The affected files are named, and merge stays disabled until resolved.</div>
+</div>
+<div style="display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 12px 20px; border-top: 1px solid #ECECE8; font-size: 14px; line-height: 20px">
+<div style="font-weight: 600">Orphaned worktrees</div>
+<div style="color: #3F4450">Released on accept, reject and stop. A periodic sweep removes any worktree whose run has ended or is unknown, then prunes Git metadata.</div>
+<div style="color: #3F4450">Live disk usage is always visible in the header.</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":960}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

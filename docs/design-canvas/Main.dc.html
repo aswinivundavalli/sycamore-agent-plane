@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Conductor overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2457D6}a:hover{color:#1A3FA0}
+</style>
+</helmet>
+<div style="width: 1280px; height: 960px; box-sizing: border-box; padding: 64px; display: flex; flex-direction: column; gap: 40px; background: #F7F7F5; color: #16181D; font-family: Inter, system-ui, sans-serif">
+<div style="display: flex; flex-direction: column; gap: 16px">
+<div style="font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #2457D6">Conductor · System design</div>
+<h1 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 52px; line-height: 1.08; font-weight: 700; letter-spacing: -0.02em; max-width: 1000px">A single control plane for every coding agent you run</h1>
+<p style="margin: 0; font-size: 19px; line-height: 1.55; color: #3F4450; max-width: 980px">Engineers now run several coding agents in parallel, spread across terminals and machines. Without a shared view, questions go unanswered, finished work waits unreviewed, branches collide and abandoned worktrees exhaust disk. Conductor gives every agent run one place to be launched, observed and reviewed.</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px">
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 24px; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Objective</h2>
+<p style="margin: 0; font-size: 15px; line-height: 1.55; color: #3F4450">Answer, at a glance, the one question that matters: which runs need a decision from me right now?</p>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 24px; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Scope</h2>
+<p style="margin: 0; font-size: 15px; line-height: 1.55; color: #3F4450">One engineer on one workstation, running several agents concurrently against local Git repositories. Claude Code runs headless today; any agent that emits a structured event stream fits behind the same adapter.</p>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2E2DD; border-radius: 14px; padding: 24px; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Design principles</h2>
+<p style="margin: 0; font-size: 15px; line-height: 1.55; color: #3F4450">The database is the system of record. Every state change is an atomic compare-and-set. Agents never depend on the control plane staying up. Nothing resumes without an explicit decision.</p>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 24px; font-weight: 600">Attention, not activity, orders the board</h2>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center">
+<span style="padding: 10px 16px; border-radius: 999px; background: #FDECC8; color: #7A4508; font-size: 15px; font-weight: 600">1 · Awaiting your answer</span>
+<span style="padding: 10px 16px; border-radius: 999px; background: #D9F2E3; color: #135C35; font-size: 15px; font-weight: 600">2 · Ready to merge</span>
+<span style="padding: 10px 16px; border-radius: 999px; background: #FBE3D3; color: #8A3A0B; font-size: 15px; font-weight: 600">3 · Conflicts or failing tests</span>
+<span style="padding: 10px 16px; border-radius: 999px; background: #F9DADA; color: #8B1E1E; font-size: 15px; font-weight: 600">4 · Failed or interrupted</span>
+<span style="padding: 10px 16px; border-radius: 999px; background: #EDE3FA; color: #4E2A8A; font-size: 15px; font-weight: 600">5 · Stalled</span>
+<span style="padding: 10px 16px; border-radius: 999px; background: #E3EAFB; color: #1E3F99; font-size: 15px; font-weight: 600">6 · In progress</span>
+</div>
+<p style="margin: 0; font-size: 15px; line-height: 1.55; color: #3F4450; max-width: 1000px">Every run carries a one-line account of what its agent is doing now, such as “Editing textkit/core.py” or “Running: pytest -q”. It is derived deterministically from the agent's own event stream, with no extra model calls and no need to open a log. The browser tab shows how many runs are waiting on you.</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+<div style="display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Core capabilities</h2>
+<ul style="margin: 0; padding-left: 20px; font-size: 15px; line-height: 1.7; color: #3F4450">
+<li>Launch a run from a repository and a plain-language task</li>
+<li>Isolate every run in its own Git worktree and branch</li>
+<li>Live state and current activity for every run</li>
+<li>Review the diff, the agent's summary and an independent test run; then merge, keep the branch or discard</li>
+<li>Full recovery from a control-plane crash, including <span style="font-family: 'JetBrains Mono', monospace; font-size: 14px">kill -9</span></li>
+<li>Guaranteed clean-up of worktrees and branches</li>
+</ul>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-family: 'Space Grotesk', Inter, sans-serif; font-size: 20px; font-weight: 600">Operating at scale</h2>
+<ul style="margin: 0; padding-left: 20px; font-size: 15px; line-height: 1.7; color: #3F4450">
+<li>Attention ranking puts decisions ahead of activity</li>
+<li>Agent questions reach you; your answer resumes the same session</li>
+<li>Overlapping edits flagged while runs are still in flight</li>
+<li>Notifications only when a run newly needs you</li>
+<li>Per-run spend caps, stall detection and hard timeouts</li>
+</ul>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":960}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
