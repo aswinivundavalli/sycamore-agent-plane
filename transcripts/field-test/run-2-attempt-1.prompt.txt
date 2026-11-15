@@ -1,0 +1,3 @@
+nth_combination(range(3), 5, 0) raises a bare IndexError with no message. Audit nth_combination, nth_permutation and nth_product for every invalid input (r larger than the pool, negative r, out-of-range index) and make each raise the documented exception type with a message that says what was wrong and the valid range. Keep the exception types backwards compatible. Add one bullet describing the change under the 'Unreleased' heading in docs/versions.rst, following the existing format.
+
+Work in the style of the existing code. Add or update unit tests in tests/ for every behaviour you change, and run the full suite with `python3 -m unittest discover -s tests -t .` before finishing; it must pass. Do not reformat unrelated code.

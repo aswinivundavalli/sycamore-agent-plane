@@ -1,0 +1,3 @@
+take(), spy() and split_into() leak itertools.islice's internal error message when given a negative size (e.g. take(-1, x) raises 'Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize'). Make each raise ValueError with a clear message naming the argument, consistent with how chunked() reports negative sizes. Document it in each docstring. Add one bullet describing the change under the 'Unreleased' heading in docs/versions.rst, following the existing format.
+
+Work in the style of the existing code. Add or update unit tests in tests/ for every behaviour you change, and run the full suite with `python3 -m unittest discover -s tests -t .` before finishing; it must pass. Do not reformat unrelated code.

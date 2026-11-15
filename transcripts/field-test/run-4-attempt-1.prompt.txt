@@ -1,0 +1,3 @@
+The chunking functions disagree on a chunk size of 0: chunked, ichunked, sliced, chunked_even and grouper return nothing, while batched, sliding_window, padded and distribute raise ValueError. Do not change any behaviour. Add a focused set of regression tests that pins down the current n=0 behaviour of each of these functions, placed next to each function's existing tests, so any future change to it is deliberate.
+
+Work in the style of the existing code. Add or update unit tests in tests/ for every behaviour you change, and run the full suite with `python3 -m unittest discover -s tests -t .` before finishing; it must pass. Do not reformat unrelated code.

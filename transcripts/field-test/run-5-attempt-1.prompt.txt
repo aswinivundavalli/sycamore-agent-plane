@@ -1,0 +1,3 @@
+Document in the docstrings what mark_ends, interleave_evenly, partitions and minmax do when given an empty iterable (for example partitions([]) yields [[]], minmax([]) raises ValueError unless default is given). Verify each claim by running the code, add a doctest example for each where it fits the existing docstring style, and make sure the doctests pass. No behaviour changes.
+
+Work in the style of the existing code. Add or update unit tests in tests/ for every behaviour you change, and run the full suite with `python3 -m unittest discover -s tests -t .` before finishing; it must pass. Do not reformat unrelated code.
