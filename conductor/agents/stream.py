@@ -17,6 +17,8 @@ Everything else (rate_limit_event, unknown types, non-JSON garbage) is ignored.
 from __future__ import annotations
 
 import json
+import shlex
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,6 +60,72 @@ def _first_line(s: Any) -> str:
     return ""
 
 
+_TEST_RE = re.compile(r"(-m\s+(unittest|pytest)\b|\bpytest\b|\b(npm|yarn|pnpm)\s+(run\s+)?test\b|"
+                      r"\bmake\s+test\b|\btox\b|\bgo\s+test\b|\bcargo\s+test\b)")
+_READERS = {"cat", "head", "tail", "less", "nl", "wc"}
+_SEARCHERS = {"grep", "rg", "ag", "ack"}
+_LINTERS = {"ruff", "black", "mypy", "flake8", "pylint", "eslint", "prettier", "tsc", "stubtest"}
+
+
+def summarize_command(cmd: Any) -> str | None:
+    """Turn a shell command into a short phrase, or None if unrecognised.
+
+    Real agents rarely send a description with their shell calls, and the
+    raw first line ("python3 - <<'EOF'", "sed -n 80,140p tests/x.py; …")
+    tells the person watching nothing.
+    """
+    text = str(cmd or "").strip()
+    if not text:
+        return None
+    if _TEST_RE.search(text):
+        return "Running the tests"
+    first = text.splitlines()[0]
+    # Drop a leading "cd somewhere &&" and keep the first command of a chain.
+    try:  # quote-aware: a "|" inside a grep pattern is not a pipe
+        lex = shlex.shlex(first, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        tokens = first.split()
+    commands, cur = [], []
+    for t in tokens:
+        if t and set(t) <= set("&|;"):
+            commands.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    commands.append(cur)
+    commands = [c for c in commands if c and c[0] != "cd"]
+    if not commands:
+        return None
+    words = commands[0]
+    prog = words[0].rsplit("/", 1)[-1]
+    args = [w for w in words[1:] if not w.startswith("-")]
+    paths = [a for a in args if "/" in a or "." in a]
+    if prog.startswith("python"):
+        if "<<" in first or "-c" in words:
+            return "Running a Python snippet"
+        if "-m" in words and words.index("-m") + 1 < len(words):
+            return f"Running {words[words.index('-m') + 1]}"
+        return f"Running {_short_path(paths[0])}" if paths else "Running Python"
+    if prog == "sed":
+        target = _short_path(paths[-1]) if paths else "a file"
+        return f"Editing {target}" if "-i" in words or any(w.startswith("-i") for w in words) \
+            else f"Reading {target}"
+    if prog in _READERS:
+        return f"Reading {_short_path(paths[0])}" if paths else "Reading a file"
+    if prog in _SEARCHERS:
+        return f"Searching for {_one_line(args[0], 60)}" if args else "Searching the code"
+    if prog in ("ls", "find", "tree"):
+        return "Looking through files"
+    if prog == "git":
+        sub = next((w for w in words[1:] if not w.startswith("-")), "")
+        return f"git {sub}".strip()
+    if prog in _LINTERS:
+        return f"Running {prog}"
+    return None
+
+
 def describe_tool(name: str, input: Any) -> str:
     """Human phrasing of a tool call, e.g. ``Reading src/app.py``."""
     inp = input if isinstance(input, dict) else {}
@@ -70,8 +138,11 @@ def describe_tool(name: str, input: Any) -> str:
     elif n == "Write":
         out = f"Writing {_short_path(path)}"
     elif n == "Bash":
-        what = inp.get("description") or _first_line(inp.get("command"))
-        out = f"Running: {_one_line(what, 100)}"
+        if inp.get("description"):
+            out = f"Running: {_one_line(inp['description'], 100)}"
+        else:
+            out = summarize_command(inp.get("command")) or \
+                f"Running: {_one_line(_first_line(inp.get('command')), 100)}"
     elif n in ("Grep", "Glob"):
         out = f"Searching for {_one_line(inp.get('pattern'), 90)}"
         if n == "Grep" and inp.get("path"):
@@ -177,7 +248,12 @@ def parse_line(line: str) -> Parsed:
             elif sub == "task_summary":
                 d = obj.get("detail")
                 if isinstance(d, str) and d.strip():
-                    p.activity = _one_line(d)
+                    # The agent's own progress line sometimes just echoes a
+                    # raw command ("Running python3 - <<'EOF' …"): rephrase it.
+                    raw = d.strip()
+                    if raw.startswith("Running ") and re.search(r"<<|[;|]|\s-\w", raw):
+                        raw = summarize_command(raw[len("Running "):]) or raw
+                    p.activity = _one_line(raw)
             elif sub == "post_turn_summary":
                 d = obj.get("status_detail")
                 if isinstance(d, str) and d.strip():

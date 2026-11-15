@@ -65,7 +65,8 @@ class TestStreamSynthetic(unittest.TestCase):
         self.assertTrue(self.act("Edit", {"file_path": "x.py"}).startswith("Editing x.py"))
         self.assertTrue(self.act("MultiEdit", {"file_path": "x.py"}).startswith("Editing"))
         self.assertEqual(self.act("Write", {"file_path": "x.py"}), "Writing x.py")
-        self.assertEqual(self.act("Bash", {"command": "ls -la\nmore"}), "Running: ls -la")
+        self.assertEqual(self.act("Bash", {"command": "ls -la\nmore"}), "Looking through files")
+        self.assertEqual(self.act("Bash", {"command": "echo hi"}), "Running: echo hi")
         self.assertEqual(self.act("Bash", {"command": "x", "description": "List files"}),
                          "Running: List files")
         self.assertEqual(self.act("Grep", {"pattern": "foo"}), "Searching for foo")
@@ -283,3 +284,34 @@ class TestFakeAgentE2E(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCommandSummaries(unittest.TestCase):
+    """Real agents send shell calls without a description (44 of 44 in the
+    more-itertools field test); the activity line must still say something."""
+
+    def test_common_commands(self):
+        from conductor.agents.stream import summarize_command as s
+        cases = {
+            'grep -n "raise\\|IndexError" more_itertools/recipes.py': "Searching for raise\\|IndexError",
+            "cd . && git status --short; head -60 docs/versions.rst": "git status",
+            "sed -n 55,80p docs/api.rst; grep x y": "Reading docs/api.rst",
+            "sed -i 's/a/b/' pkg/more.py": "Editing pkg/more.py",
+            "python3 - <<'EOF'\nprint(1)\nEOF": "Running a Python snippet",
+            "python3 -m unittest discover -s tests -t .": "Running the tests",
+            "cd web && npm test": "Running the tests",
+            "ruff check .": "Running ruff",
+        }
+        for cmd, want in cases.items():
+            with self.subTest(cmd=cmd):
+                self.assertEqual(s(cmd), want)
+        self.assertIsNone(s("echo hi"))
+
+    def test_task_summary_echoing_a_command_is_rephrased(self):
+        line = json.dumps({"type": "system", "subtype": "task_summary",
+                           "detail": "Running python3 - <<'EOF' import re p='x'"})
+        self.assertEqual(stream.parse_line(line).activity, "Running a Python snippet")
+        line = json.dumps({"type": "system", "subtype": "task_summary",
+                           "detail": "Running the remaining edits"})
+        self.assertEqual(stream.parse_line(line).activity, "Running the remaining edits")
+
