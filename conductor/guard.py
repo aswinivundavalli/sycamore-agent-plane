@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import policy as pol
+from .sandbox import REFUSED
 
 PATH_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 # Agents whose CLI applies policy deny rules itself (verified for Claude Code:
@@ -41,9 +42,12 @@ class Finding:
 class LiveGuard:
     """Per-run state: tool calls awaiting their result."""
     pending: dict[str, dict] = field(default_factory=dict)
+    # With the write sandbox on: every shell command awaiting its result, so a
+    # write the sandbox refused can be reported with the command that tried it.
+    shell: dict[str, str] = field(default_factory=dict)
 
     def inspect(self, obj: dict, policy: pol.Policy, agent: str,
-                worktree: str | None) -> list[Finding]:
+                worktree: str | None, sandboxed: bool = False) -> list[Finding]:
         findings: list[Finding] = []
         typ = obj.get("type")
         content = ((obj.get("message") or {}).get("content")) or []
@@ -53,6 +57,9 @@ class LiveGuard:
             for item in content:
                 if not isinstance(item, dict) or item.get("type") != "tool_use":
                     continue
+                if sandboxed and item.get("name") == "Bash":
+                    self.shell[item.get("id") or ""] = str((item.get("input") or {})
+                                                          .get("command") or "")
                 v = self._check_call(item.get("name"), item.get("input") or {}, policy, worktree)
                 if v is None:
                     continue
@@ -64,13 +71,23 @@ class LiveGuard:
             for item in content:
                 if not isinstance(item, dict) or item.get("type") != "tool_result":
                     continue
-                v = self.pending.pop(item.get("tool_use_id") or "", None)
+                tid = item.get("tool_use_id") or ""
+                text = _text(item.get("content")).lower()
+                refused = any(m in text for m in REFUSED)
+                cmd = self.shell.pop(tid, None)
+                v = self.pending.pop(tid, None)
                 if v is None:
+                    if sandboxed and cmd is not None and refused:
+                        findings.append(Finding({
+                            "rule": "write_outside_worktree", "action": "flag", "at": time.time(),
+                            "detail": f"the sandbox refused a write outside the worktree: "
+                                      f"`{_first_line(cmd)}`"}, kill=False))
                     continue
-                if item.get("is_error") and "denied" in _text(item.get("content")).lower():
+                if item.get("is_error") and ("denied" in text or (sandboxed and refused)):
+                    by = "agent's permissions" if "denied" in text else "sandbox"
                     findings.append(Finding({**v, "action": "flag", "at": time.time(),
-                                             "detail": v["detail"] + " (blocked by the "
-                                             "agent's permissions)"}, kill=False))
+                                             "detail": v["detail"] + f" (blocked by the {by})"},
+                                            kill=False))
                 else:
                     findings.append(self._finding(v))
         return findings
@@ -90,6 +107,11 @@ class LiveGuard:
                 path = path[len(worktree.rstrip("/")) + 1:]
             return pol.check_path(policy, path) if path else None
         return None
+
+
+def _first_line(s: str, limit: int = 120) -> str:
+    line = (s.strip().splitlines() or [""])[0]
+    return line if len(line) <= limit else line[:limit - 1] + "…"
 
 
 def _text(content) -> str:

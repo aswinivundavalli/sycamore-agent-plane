@@ -1,0 +1,18 @@
+# A realistic repository policy: protected paths, forbidden commands, a size
+# cap, no deleting tests. It still lets an agent write anywhere on the host
+# with a shell command, because none of these rules can see such a write.
+[paths]
+forbidden = [".github/**", "secrets/**"]
+
+[diff]
+max_lines = 400
+forbid_test_deletion = true
+
+[commands]
+forbidden = ["curl", "wget"]
+
+# The fix. Run the agent, and the test command the conductor runs on its
+# work, in an OS sandbox: only the run's worktree is writable and /tmp is
+# private. If this machine cannot provide a sandbox, the run does not start.
+[sandbox]
+writes = "worktree"

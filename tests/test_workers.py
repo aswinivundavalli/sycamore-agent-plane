@@ -169,6 +169,24 @@ class WorkersTest(unittest.TestCase):
         run = self.wait_for(rid, states.FINISHED, timeout=40)
         self.assertEqual(run["attempt"], 1)  # re-attached, never relaunched
 
+    def test_write_sandbox_holds_on_a_remote_worker(self):
+        from conductor import sandbox
+        if not sandbox.available()[0]:
+            self.skipTest("no OS sandbox on this machine")
+        (self.repo / ".conductor").mkdir()
+        (self.repo / ".conductor" / "policy.toml").write_text('[sandbox]\nwrites = "worktree"\n')
+        gitops.run_git(self.repo, "add", "-A")
+        gitops.run_git(self.repo, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q",
+                       "-m", "policy")
+        outside = Path(tempfile.mkdtemp(prefix="conductor-w-sbx-", dir=Path.home()))
+        self.addCleanup(lambda: __import__("shutil").rmtree(outside, True))
+        self.start_worker()
+        rid = self.create(f"Escape [[fake:sh]]\necho x >> {outside}/bashrc\n[[/fake]]")
+        run = self.wait_for(rid, states.FINISHED)
+        self.assertFalse((outside / "bashrc").exists())
+        self.assertIn("write_outside_worktree", [v["rule"] for v in run["violations"]])
+        self.assertTrue(any("sandboxed on" in e["message"] for e in self.store.events(rid)))
+
     def test_events_are_idempotent_and_auth_is_required(self):
         reg = self.sup.fleet.register({"name": "manual", "capacity": 1})
         wid = reg["worker_id"]

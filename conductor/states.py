@@ -91,6 +91,16 @@ def attention(run: dict) -> tuple[int, str]:
         return 95, f"{prefix}: {v.get('detail') or v.get('rule')}"[:120] + more
     if s == FINISHED:
         mc = run.get("merge_check") or {}
+        refused = [v for v in (run.get("violations") or [])
+                   if v.get("rule") == "write_outside_worktree"]
+        if refused:
+            # Nothing escaped (the sandbox held), and the diff may be fine, so
+            # the merge is not blocked; but an agent that tried to write
+            # outside its worktree should be looked at before anything else
+            # that is merely ready.
+            n = len(refused)
+            return 93, (f"Finished, but the sandbox refused {n} write{'s' if n > 1 else ''} "
+                        "outside the worktree: review before merging")
         if mc.get("markers"):
             return 85, "Finished, but conflict markers left in " + ", ".join(mc["markers"][:3])
         if mc.get("conflicts"):

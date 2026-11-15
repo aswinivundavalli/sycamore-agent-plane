@@ -200,6 +200,7 @@ class Fleet:
             "session_id": run.get("session_id"), "agent": run["agent"],
             "model": run.get("model"), "budget_usd": budget,
             "disallowed_tools": pol.claude_disallowed_tools(policy),
+            "sandbox_writes": policy.sandbox_writes,
             "max_runtime_secs": min(self.cfg.max_run_secs,
                                     policy.max_runtime_secs or self.cfg.max_run_secs),
         }
@@ -234,6 +235,9 @@ class Fleet:
                 self.store.add_event(run_id, "info", f"Merged {run['base_branch']} into the "
                                      f"branch; conflicts in {len(body['conflicts'])} file(s) "
                                      "handed to the agent")
+            if self.sup.policy_for(run).sandbox_writes == "worktree":
+                self.store.add_event(run_id, "info", f"Agent sandboxed on {wid}: only its "
+                                     "worktree is writable; /tmp is private")
             if body.get("prompt"):
                 d = self.cfg.attempt_dir(run_id, run["attempt"])
                 d.mkdir(parents=True, exist_ok=True)

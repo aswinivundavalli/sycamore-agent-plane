@@ -42,6 +42,6 @@
 
 ## Known weak spots
 
-- Agents and test commands run unsandboxed on workers. This is a trust model, not isolation. A shell redirect to a path outside the worktree passes every policy check; a real agent did exactly that once (an empty `/tmp/x.py`).
+- By default, agents and their tests run unsandboxed. A shell redirect outside the worktree passes every policy check; a real agent did it once (an empty `/tmp/x.py`). Kept as the default on purpose. `[sandbox] writes = "worktree"` closes it with an OS sandbox (bubblewrap or sandbox-exec, failing closed); see [the example](../examples/guardrails/write-escape/). Network and reads stay open.
 - Workers report what they ran. A compromised worker could lie; the policy's pre-merge diff check is the backstop.
 - Questions without the `QUESTION:` marker are shown as "finished".

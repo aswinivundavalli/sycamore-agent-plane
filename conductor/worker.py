@@ -41,8 +41,9 @@ from pathlib import Path
 
 from . import gitops
 from .agents.registry import get_adapter
+from . import policy as pol
 from .supervisor import _kill_group, _pkg_root, _read_json, _runner_alive, _run_test_cmd, \
-    _tail, conflict_prompt
+    _tail, conflict_prompt, sandboxed
 
 log = logging.getLogger("conductor.worker")
 
@@ -345,8 +346,11 @@ class Job(threading.Thread):
         env = {**os.environ, **spec.env, "CONDUCTOR_RUN_ID": str(self.run_id),
                "PYTHONPATH": _pkg_root()}
         env.pop("CLAUDECODE", None)
+        argv, _note = sandboxed(pol.Policy(sandbox_writes=s.get("sandbox_writes",
+                                                                "unrestricted")),
+                                spec.argv, wt, d / "tmp", env)
         proc = subprocess.Popen(
-            [sys.executable, "-m", "conductor.runner", str(d), str(wt), "--", *spec.argv],
+            [sys.executable, "-m", "conductor.runner", str(d), str(wt), "--", *argv],
             cwd=str(wt), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True)
         self.runner_pid = proc.pid
@@ -430,7 +434,9 @@ class Job(threading.Thread):
         if cmd is None:  # recovering in the testing phase: ask again by re-finishing
             cmd = gitops.detect_test_cmd(self.worktree) or ""
         if cmd.strip():
-            status, output = _run_test_cmd(cmd, self.worktree, 600)
+            sandbox_tmp = (self.attempt_dir / "tmp-tests"
+                           if self.spec.get("sandbox_writes") == "worktree" else None)
+            status, output = _run_test_cmd(cmd, self.worktree, 600, sandbox_tmp=sandbox_tmp)
             gitops.run_git(self.worktree, "checkout", "--", ".", check=False)
             gitops.run_git(self.worktree, "clean", "-fdq", check=False)
         else:

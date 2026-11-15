@@ -113,6 +113,15 @@ It is enforced at four points:
 
 Agents can never change `.conductor/`, the directory that holds their own policy.
 
+One gap is kept by default on purpose: a shell command can write *anywhere* on the machine (`echo … >> ~/.bashrc`, into your main checkout), and no rule above can see it, because it never enters the diff. To close it, add three lines to a repository's policy:
+
+```toml
+[sandbox]
+writes = "worktree"   # the agent and its tests run in an OS sandbox; only the worktree is writable, /tmp is private
+```
+
+On Linux this uses bubblewrap; on macOS, `sandbox-exec`. If no sandbox is available, the run doesn't start. `python3 -m conductor.sandbox --check` verifies it on your machine. [examples/guardrails/write-escape](examples/guardrails/write-escape/) runs the same escaping task before and after the change and checks the host filesystem; it ends with 4 of 4 escapes before and 0 of 4 after.
+
 ### Repeatable workflows
 A workflow is a named chain of steps, defined once in `.conductor/workflows/<name>.toml` and fired at any task. The built-ins are `feature` (implement → add tests → self-review with an approval gate → docs), `bugfix` and `dependency-bump`.
 

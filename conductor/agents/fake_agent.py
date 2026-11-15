@@ -33,8 +33,12 @@ FILE_RE = re.compile(r"\[\[fake:(write|append)\s+([^\]]+?)\]\](.*?)\[\[/fake\]\]
 FLAG_RE = re.compile(r"\[\[fake:(ask|fail|hang)\]\]")
 SLEEP_RE = re.compile(r"\[\[fake:sleep\s+([0-9.]+)\]\]")
 COST_RE = re.compile(r"\[\[fake:cost\s+([0-9.]+)\]\]")
-ANY_RE = re.compile(r"\[\[fake:(write|append)\s+[^\]]+?\]\].*?\[\[/fake\]\]|\[\[fake:[^\]]*\]\]", re.S)
+ANY_RE = re.compile(r"\[\[fake:(write|append)\s+[^\]]+?\]\].*?\[\[/fake\]\]|"
+                    r"\[\[fake:sh\]\].*?\[\[/fake\]\]|\[\[fake:[^\]]*\]\]", re.S)
 BASH_RE = re.compile(r"\[\[fake:bash ([^\]]+)\]\]")  # [[fake:bash git push origin main]]
+# [[fake:sh]]echo hi > x.txt[[/fake]]: really executed (bash -c, in the worktree),
+# one Bash tool call per non-empty line, with the real output and exit status.
+SH_RE = re.compile(r"\[\[fake:sh\]\](.*?)\[\[/fake\]\]", re.S)
 ASK_RE = re.compile(r"\[\[fake:ask:\s*([^\]]+)\]\]")  # [[fake:ask: custom question?]]
 QUESTION = "Which approach should I take, A or B?"
 
@@ -76,6 +80,8 @@ class Agent:
         self.hang = "hang" in flags
         self.extra_sleep = sum(float(x) for x in SLEEP_RE.findall(p))
         self.bash = [c.strip() for c in BASH_RE.findall(p)]
+        self.sh = [line.strip() for block in SH_RE.findall(p)
+                   for line in block.splitlines() if line.strip()]
         m = COST_RE.search(p)
         self.cost = float(m.group(1)) if m else 0.0
         self.task = " ".join(ANY_RE.sub(" ", p).split()) or "(no task)"
@@ -203,6 +209,24 @@ class Agent:
             touched.append(rel)
         return touched
 
+    def run_shell(self, cmd: str) -> None:
+        """Really run a shell command, reported exactly like Claude's Bash tool."""
+        import subprocess
+        self.summary(f"Running {cmd}")
+        tid = "toolu_" + uuid.uuid4().hex[:20]
+        self.assistant([{"type": "tool_use", "id": tid, "name": "Bash",
+                         "input": {"command": cmd}}])
+        try:
+            p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=60)
+            out, code = ((p.stdout or "") + (p.stderr or "")).strip(), p.returncode
+        except (OSError, subprocess.TimeoutExpired) as e:
+            out, code = str(e), 1
+        body = (f"Exit code {code}\n{out}" if code else out) or "(no output)"
+        self.emit({"type": "user", "parent_tool_use_id": None, "message": {
+            "role": "user", "content": [{"tool_use_id": tid, "type": "tool_result",
+                                         "content": body, "is_error": code != 0}]}})
+        self.pause()
+
     def step_tests(self) -> None:
         self.summary("Running the tests")
         self.tool("Bash", {"command": "echo 'running tests'", "description": "running tests"},
@@ -261,6 +285,8 @@ class Agent:
         self.middle_sleep()
         touched = self.step_files()
         self.pause()
+        for cmd in self.sh:
+            self.run_shell(cmd)
         self.step_tests()
         self.pause()
 

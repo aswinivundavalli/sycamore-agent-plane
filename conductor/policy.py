@@ -88,6 +88,11 @@ class PolicyError(ValueError):
 ACTIONS = ("flag", "kill")  # ordered weakest -> strictest
 
 _STRLIST, _INT, _NUM, _BOOL, _ACTION = "strlist", "int", "num", "bool", "action"
+_WRITES = "writes"
+# Where an agent may write on the host, weakest -> strictest. "worktree" runs
+# the agent (and the repository's test command) in an OS sandbox in which
+# everything outside its worktree is read-only and /tmp is private.
+WRITES = ("unrestricted", "worktree")
 
 SCHEMA: dict[str, dict[str, str]] = {
     "paths": {"allowed": _STRLIST, "forbidden": _STRLIST},
@@ -98,6 +103,7 @@ SCHEMA: dict[str, dict[str, str]] = {
                "max_parallel_per_repo": _INT},
     "merge": {"protected_targets": _STRLIST, "require_approval_over_lines": _INT},
     "violation": {"on_forbidden_command": _ACTION, "on_forbidden_path": _ACTION},
+    "sandbox": {"writes": _WRITES},
 }
 
 DEFAULT_FORBIDDEN_COMMANDS = ("git push", "git reset --hard", "rm -rf /", "sudo")
@@ -138,6 +144,10 @@ def _check_value(source: str, section: str, key: str, kind: str, value):
         if (isinstance(value, bool) or not isinstance(value, (int, float))
                 or not math.isfinite(value) or value < 0):
             raise PolicyError(source, f"{where} must be a number >= 0, got {value!r}")
+        return value
+    if kind == _WRITES:
+        if value not in WRITES:
+            raise PolicyError(source, f"{where} must be one of {', '.join(map(repr, WRITES))}, got {value!r}")
         return value
     if kind == _ACTION:
         if value not in ACTIONS:
@@ -198,6 +208,7 @@ class Policy:
     require_approval_over_lines: int | None = None
     on_forbidden_command: str = "kill"
     on_forbidden_path: str = "kill"
+    sandbox_writes: str = "unrestricted"
 
     def to_dict(self) -> dict:
         out = {}
@@ -261,6 +272,7 @@ def combine(layers: list[tuple[str, dict]]) -> Policy:
         "max_parallel_per_repo": None, "protected_targets": (),
         "require_approval_over_lines": None,
         "on_forbidden_command": None, "on_forbidden_path": None,
+        "sandbox_writes": "unrestricted",
     }
     builtin = {k: v for k, v in DEFAULTS.items() if k != "violation"}
     for source, raw in [("built-in", builtin), *layers]:
@@ -286,6 +298,9 @@ def combine(layers: list[tuple[str, dict]]) -> Policy:
         acc["protected_targets"] = _union(acc["protected_targets"], merge.get("protected_targets", ()))
         acc["require_approval_over_lines"] = _min(acc["require_approval_over_lines"],
                                                   merge.get("require_approval_over_lines"))
+        writes = layer.get("sandbox", {}).get("writes")
+        if writes and WRITES.index(writes) > WRITES.index(acc["sandbox_writes"]):
+            acc["sandbox_writes"] = writes  # once confined, no later layer can relax it
         viol = layer.get("violation", {})
         for key in ("on_forbidden_command", "on_forbidden_path"):
             if key in viol and (acc[key] is None
@@ -694,6 +709,8 @@ def describe(policy: Policy) -> list[dict]:
         rows.append(("Protected merge targets", ", ".join(policy.protected_targets)))
         cap = policy.require_approval_over_lines
         rows.append(("Approval required", f"over {cap} lines" if cap else "for every merge"))
+    if policy.sandbox_writes == "worktree":
+        rows.append(("Agent writes", "worktree only (OS sandbox; /tmp private)"))
     rows.append(("On forbidden command", policy.on_forbidden_command))
     rows.append(("On forbidden path", policy.on_forbidden_path))
     return [{"rule": r, "value": v} for r, v in rows]

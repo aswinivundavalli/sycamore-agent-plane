@@ -33,6 +33,7 @@ from pathlib import Path
 from . import gitops, states
 from . import cron
 from . import policy as pol
+from . import sandbox
 from . import workflows as wfl
 from .guard import LiveGuard
 from .agents import stream as streamparse
@@ -259,8 +260,11 @@ class Supervisor:
 
         env = {**os.environ, **spec.env, "CONDUCTOR_RUN_ID": str(run_id)}
         env.pop("CLAUDECODE", None)  # let a nested Claude Code start normally
+        argv, note = sandboxed(self.policy_for(run), spec.argv, wt, d / "tmp", env)
+        if note:
+            self.store.add_event(run_id, "info", note)
         proc = subprocess.Popen(
-            [sys.executable, "-m", "conductor.runner", str(d), str(wt), "--", *spec.argv],
+            [sys.executable, "-m", "conductor.runner", str(d), str(wt), "--", *argv],
             cwd=str(wt), env={**env, "PYTHONPATH": _pkg_root()},
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True)  # own process group: survives us, killable as a unit
@@ -347,7 +351,8 @@ class Supervisor:
             except ValueError:
                 obj = None
             if isinstance(obj, dict):
-                for f in guard.inspect(obj, policy, run["agent"], wt):
+                for f in guard.inspect(obj, policy, run["agent"], wt,
+                                       sandboxed=policy.sandbox_writes == "worktree"):
                     new_violations.append(f.violation)
                     events.append(("error" if f.kill else "info",
                                    f"Policy: {f.violation['detail']}", f.violation))
@@ -449,7 +454,9 @@ class Supervisor:
                 self.store.add_event(run_id, "test", f"Running tests: {cmd}")
                 status, output = _run_test_cmd(
                     cmd, wt, self.cfg.test_timeout_secs,
-                    on_start=lambda p: self._test_procs.__setitem__(run_id, p))
+                    on_start=lambda p: self._test_procs.__setitem__(run_id, p),
+                    sandbox_tmp=(self.cfg.attempt_dir(run_id, run["attempt"]) / "tmp-tests"
+                                 if self.policy_for(run).sandbox_writes == "worktree" else None))
                 # Tests may leave artifacts behind; the result is the committed state.
                 gitops_safe(gitops.run_git, wt, "checkout", "--", ".")
                 gitops_safe(gitops.run_git, wt, "clean", "-fdq")
@@ -831,13 +838,37 @@ def _kill_group(pid: int, grace: float = 3.0) -> None:
     threading.Thread(target=finish, daemon=True).start()
 
 
-def _run_test_cmd(cmd: str, cwd: str, timeout: int, on_start=None) -> tuple[str, str]:
+def sandboxed(policy: "pol.Policy", argv: list[str], worktree, private_tmp,
+              env: dict) -> tuple[list[str], str | None]:
+    """Wrap an agent's command line in the OS sandbox when the policy asks for
+    it (``[sandbox] writes = "worktree"``). Fails closed: raises RuntimeError
+    if the policy requires a sandbox this machine cannot provide."""
+    if policy.sandbox_writes != "worktree":
+        return argv, None
+    ok, kind, detail = sandbox.available()
+    if not ok:
+        raise RuntimeError('the repository policy requires a write sandbox '
+                           f'([sandbox] writes = "worktree"), but none is available: {detail}')
+    wrapped, extra = sandbox.wrap(argv, worktree, private_tmp)
+    env.update(extra)
+    return wrapped, (f"Agent sandboxed ({kind}): only its worktree is writable; "
+                     "/tmp is private")
+
+
+def _run_test_cmd(cmd: str, cwd: str, timeout: int, on_start=None,
+                  sandbox_tmp=None) -> tuple[str, str]:
     # The test command is the user's own (or detected from their repo), run in
     # their own worktree, so a shell is appropriate here. It gets its own
     # process group so a timeout or a cancel kills the whole test tree.
-    p = subprocess.Popen(cmd, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+    # With a write sandbox, it runs inside it too: the agent wrote these
+    # tests, and the conductor must not run them with more rights than it had.
+    argv, env = (cmd, None)
+    if sandbox_tmp is not None:
+        wrapped, extra = sandbox.wrap(["/bin/sh", "-c", cmd], cwd, sandbox_tmp)
+        argv, env = wrapped, {**os.environ, **extra}
+    p = subprocess.Popen(argv, shell=sandbox_tmp is None, cwd=cwd, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
-                         errors="replace", start_new_session=True)
+                         errors="replace", start_new_session=True, env=env)
     if on_start:
         on_start(p)
     try:
