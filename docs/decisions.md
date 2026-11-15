@@ -42,6 +42,6 @@
 
 ## Known weak spots
 
-- Agents and test commands run unsandboxed on workers. This is a trust model, not isolation.
+- Agents and test commands run unsandboxed on workers. This is a trust model, not isolation. A shell redirect to a path outside the worktree passes every policy check; a real agent did exactly that once (an empty `/tmp/x.py`).
 - Workers report what they ran. A compromised worker could lie; the policy's pre-merge diff check is the backstop.
 - Questions without the `QUESTION:` marker are shown as "finished".

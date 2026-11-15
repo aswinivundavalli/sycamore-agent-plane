@@ -109,6 +109,10 @@ class WorkersTest(unittest.TestCase):
         self.assertEqual(run["diff_stat"]["files"], 1)
         self.assertEqual(run["changed_files"], ["remote.txt"])
         self.assertTrue(any("Agent started on" in e["message"] for e in self.store.events(rid)))
+        # the raw transcript is kept on the coordinator too (harvesting)
+        log = self.svc.log(rid)
+        self.assertTrue(any('"type": "result"' in ln or '"type":"result"' in ln
+                            for ln in log["lines"]))
         self.svc.accept(rid, "merge")
         self.assertEqual(gitops.run_git(self.repo, "show", "main:remote.txt"), "from a worker")
         # the worker is told to clean up its worktree

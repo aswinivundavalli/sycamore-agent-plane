@@ -235,6 +235,10 @@ class Fleet:
                                      f"branch; conflicts in {len(body['conflicts'])} file(s) "
                                      "handed to the agent")
             if body.get("prompt"):
+                d = self.cfg.attempt_dir(run_id, run["attempt"])
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "prompt.txt").write_text(str(body["prompt"]))
+                (d / "stream.jsonl").unlink(missing_ok=True)  # a fresh attempt
                 self.store.add_event(run_id, "info", "Prompt for this attempt recorded by the "
                                      "worker", {"prompt": str(body["prompt"])[:4000]})
             self.store.transition(
@@ -260,7 +264,14 @@ class Fleet:
             data = data[have - offset:]
             end = data.rfind(b"\n")
             if end >= 0:
-                self.sup.ingest_chunk(run, data[:end + 1])
+                chunk = data[:end + 1]
+                # Keep the raw transcript centrally, as for a local run: the
+                # worker deletes its copy when the run is cleaned up.
+                d = self.cfg.attempt_dir(run_id, run["attempt"])
+                d.mkdir(parents=True, exist_ok=True)
+                with open(d / "stream.jsonl", "ab") as f:
+                    f.write(chunk)
+                self.sup.ingest_chunk(run, chunk)
             return {"offset": self.store.get(run_id)["stream_offset"]}
 
     def finish(self, wid: str, run_id: int, body: dict) -> dict:

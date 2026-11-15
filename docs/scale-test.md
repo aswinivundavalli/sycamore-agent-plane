@@ -59,3 +59,28 @@ How each check was made:
 - **This was one 4-core box.** Spreading workers across real machines adds git transfer time over the network, through `CONDUCTOR_REPO_REMOTES`, which wasn't measured here.
 - **There is one coordinator with SQLite.** WAL handled about 10 event batches a second plus the board polling without trouble. Several coordinators behind a load balancer would need Postgres with leases; the `Store` interface is kept narrow so that swap stays contained.
 - **No sandboxing.** Agents and their test commands run unsandboxed on the workers, with the same trust model as the single-machine conductor.
+
+## Real agents on workers, under a repository policy
+
+The scale test above uses the scripted agent. This run checks the same path with real Claude Code. Two `feature` workflows ran on two workers (capacity 1 each) against more-itertools at `ceafee8`, with this repository policy committed:
+
+```toml
+[paths]   forbidden = [".github/**"]
+[diff]    max_lines = 400   forbid_test_deletion = true
+[commands] forbidden = ["curl", "wget", "pip install"]     # plus the built-ins: git push, ...
+[limits]  max_budget_usd = 3
+```
+
+| Run | Worker | Workflow | Cost | Result |
+|---|---|---|---|---|
+| `merge_intervals` | w-4dc2… | implement → add-tests → self-review (gate, approved) → docs | $1.86 | merged; +185 lines in 6 files; policy clean |
+| `consecutive_ranges` | w-147b… | same, plus a conflict resolution attempt | $2.05 | `docs/versions.rst` conflict with the first merge, resolved by the agent on its worker, re-tested, merged |
+
+**Total:** $3.91. `master` is green afterwards (958 tests), and both functions behave as specified. The audit log holds both approvals and both merges, and only `master` is left in the repository.
+
+What it showed:
+- **The self-review step caught real defects.** In one run the code used `>` and `<=` while its type stub promised only `<` was needed; it was fixed, with a test. In the other, a test asserted nothing; it was fixed.
+- **The overlap warning predicted the conflict.** The two runs were flagged as overlapping *before* either merged. That pair, and only that pair, conflicted.
+- **Conflict resolution works through a remote worker:** merge the target in on the worker, hand the conflicted file to the agent's resumed session, re-test, merge.
+- **A guardrail gap the agent reported itself.** A scratch shell command created an empty `/tmp/x.py` *outside* its worktree. The live check sees file-editing tools and forbidden commands, and the pre-merge check sees the diff, but a shell redirect to an arbitrary path is invisible to both. Only OS-level sandboxing of the agent closes this. It's recorded in the decisions doc.
+- **Fixed as a result:** a remote run's raw transcript lived only on its worker and was deleted on clean-up. The coordinator now keeps the raw stream it receives, as it does for local runs, so the Raw log tab and central harvesting work for remote runs too.
