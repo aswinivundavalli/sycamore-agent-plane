@@ -345,7 +345,7 @@ details.sec-done[open] > summary::before { content: "▾"; }
   background: var(--gray-bg); color: var(--gray); margin-top: 1px;
 }
 .ev-time { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 2px; white-space: nowrap; }
-.ev-att { font-size: 10px; opacity: .8; }
+.ev-att { display: block; width: fit-content; margin-top: 2px; font-size: 10px; line-height: 14px; padding: 0 4px; border-radius: 4px; color: var(--muted); background: color-mix(in srgb, var(--border) 60%, transparent); }
 .ev-msg { word-break: break-word; }
 .ev-text { white-space: pre-wrap; word-break: break-word; }
 .ev-text.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: zoom-in; }

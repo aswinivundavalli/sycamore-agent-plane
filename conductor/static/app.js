@@ -760,7 +760,7 @@ function eventHTML(ev) {
     : '<span class="ev-msg">' + esc(msg) + "</span>";
   return '<span class="ev-icon k-' + kind + '" title="' + esc(ev.kind) + '">' + KIND_ICON[kind] + "</span>" +
     '<span class="ev-time" title="' + esc(new Date((ev.ts || 0) * 1000).toLocaleString()) + '">' + esc(clockTime(ev.ts)) +
-    (ev.attempt > 1 ? ' <span class="ev-att">a' + esc(ev.attempt) + "</span>" : "") + "</span>" + body;
+    (ev.attempt > 1 ? ' <span class="ev-att" title="attempt ' + esc(ev.attempt) + '">attempt ' + esc(ev.attempt) + "</span>" : "") + "</span>" + body;
 }
 
 function renderEvents(events) {
