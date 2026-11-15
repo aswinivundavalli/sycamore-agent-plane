@@ -355,6 +355,7 @@ class Store:
                    SUM(attention_score >= {states.NEEDS_YOU}) AS needs_you,
                    SUM(state = 'finished' AND test_status = 'passed') AS ready,
                    SUM(state IN ('failed','interrupted')) AS failed,
+                   SUM(state = 'interrupted') AS interrupted,
                    SUM(state IN ('queued','starting','running','testing')) AS active,
                    SUM(state IN ('accepted','rejected','cancelled')) AS done,
                    MAX(attention_score) AS top_score, MAX(created_at) AS latest

@@ -108,5 +108,20 @@ Served by `conductor/server.py`; the UI in `conductor/static/` is the only clien
 | GET | `/api/policy` | `?repo=<path>` | `{"policy":{…}, "rules":[{"rule","value"}], "sources":[paths], "sha"}` |
 | GET | `/api/audit` | `?run_id=&limit=` | `{"entries":[{"ts","actor","run_id","action","detail"}]}` |
 
-`Group`: `{"group_key","title","total","needs_you","ready","failed","active","done","top_score","latest"}`.
+`Group`: `{"group_key","title","total","needs_you","ready","failed","interrupted","active","done","top_score","latest"}` (`failed` includes interrupted runs).
 `next3`: the three highest-attention runs that need you (attention_score ≥ 60), same order as the needs_you view.
+
+## Workflows and schedules (phase 2)
+
+Run object adds `workflow` (name), `workflow_step` (0-based index of the current step), `workflow_def` (the snapshot: `{name, description, source, steps:[{id, prompt, tests, gate, on_fail, session, budget_usd}]}`) and `schedule_id`.
+A workflow gate puts the run in `waiting_input` with a `question`; answering "approve" starts the next step, and any other text is passed to that step as a reviewer note.
+
+| Method | Path | Body / query | Returns |
+|---|---|---|---|
+| GET | `/api/workflows` | `?repo=<path>` | `{"workflows":[{name, description, source, steps, step_ids}]}` (built-in, `CONDUCTOR_HOME/workflows`, then the repo's `.conductor/workflows`) |
+| POST | `/api/runs` | add `workflow: "<name>"` | the run starts at step 1 of that workflow |
+| GET | `/api/schedules` | | `{"schedules":[Schedule…]}` |
+| POST | `/api/schedules` | `{name, repo_path, task, kind: "cron"\|"on_change", cron?, watch_ref?, poll_secs?, base_branch?, workflow?, agent?, budget_usd?, overlap?: "skip"\|"queue", catch_up?: "once"\|"skip"}` | `Schedule` (201) |
+| POST | `/api/schedules/<id>/<op>` | op = `pause` \| `resume` \| `run_now` \| `delete` | `Schedule` (or `{"deleted": id}`) |
+
+`Schedule`: `{id, name, repo_path, base_branch, task, workflow, agent, budget_usd, kind, cron, watch_ref, poll_secs, overlap, catch_up, enabled, next_fire_at, last_fired_at, last_run_id, last_seen_sha, last_note, created_at, updated_at}`. Cron expressions are UTC. Runs a schedule creates are grouped under `group_key = "schedule:<id>"`.

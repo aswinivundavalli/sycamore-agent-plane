@@ -13,30 +13,46 @@
 <header class="topbar">
   <div class="brand">Conductor</div>
   <div class="counts" id="counts"></div>
+  <div class="filters">
+    <input type="search" id="search" class="search" placeholder="Search runs…" title="Search titles, tasks and branches (/)" aria-label="Search runs" autocomplete="off" spellcheck="false">
+    <select id="repo-filter" class="repo-filter" aria-label="Filter by repository"><option value="">All repos</option></select>
+  </div>
   <div class="spacer"></div>
   <div class="disk" id="disk" title="Worktree disk usage"></div>
+  <button type="button" class="btn-link topbar-link" id="audit-btn" title="Policy overrides, bulk actions and other recorded decisions">Audit</button>
   <button type="button" class="btn" id="notify-btn" hidden title="Get a desktop notification when a run needs you">Notify me</button>
   <button type="button" class="btn btn-primary" id="new-run-btn" title="New run (n)">New run</button>
 </header>
 
+<section class="next3" id="next3" hidden aria-label="Look at these next">
+  <h2 class="sec-h">Look at these next</h2>
+  <div class="n3-cards" id="n3-cards"></div>
+</section>
+
 <main class="layout">
   <aside class="board" id="board" aria-label="Runs">
-    <section class="sec sec-needs" id="sec-needs">
+    <div class="filter-note" id="filter-note" hidden></div>
+    <section class="sec sec-groups" id="sec-groups" hidden>
+      <h2 class="sec-h">Groups <span class="sec-n" id="n-groups"></span></h2>
+      <div class="groups" id="groups"></div>
+      <button type="button" class="btn btn-sm more" id="groups-all" hidden></button>
+    </section>
+    <section class="sec sec-needs" id="sec-needs" hidden>
       <h2 class="sec-h">Needs you <span class="sec-n" id="n-needs"></span></h2>
       <div class="cards" id="cards-needs"></div>
+      <button type="button" class="btn btn-sm more" data-more="needs" hidden></button>
     </section>
-    <section class="sec sec-progress" id="sec-progress">
+    <section class="sec sec-progress" id="sec-progress" hidden>
       <h2 class="sec-h">In progress <span class="sec-n" id="n-progress"></span></h2>
       <div class="cards" id="cards-progress"></div>
+      <button type="button" class="btn btn-sm more" data-more="progress" hidden></button>
     </section>
     <details class="sec sec-done" id="sec-done">
       <summary class="sec-h">Done <span class="sec-n" id="n-done"></span></summary>
       <div class="cards" id="cards-done"></div>
+      <button type="button" class="btn btn-sm more" data-more="done" hidden></button>
     </details>
-    <div class="board-empty" id="board-empty" hidden>
-      <p>No runs yet.</p>
-      <p class="muted">Press <kbd>n</kbd> or click <b>New run</b> to start an agent.</p>
-    </div>
+    <div class="board-empty" id="board-empty" hidden></div>
   </aside>
 
   <section class="detail" id="detail" aria-label="Run detail">
@@ -69,6 +85,7 @@
       <div class="tab-body" id="tab-review" data-pane="review" hidden>
         <div id="rv-summary"></div>
         <div id="rv-checks"></div>
+        <div id="rv-policy" class="rv-policy"></div>
         <div id="rv-diff"></div>
       </div>
       <div class="tab-body" id="tab-activity" data-pane="activity" hidden>
@@ -96,13 +113,18 @@
       <datalist id="recent-repos"></datalist>
       <small id="f-repo-status" class="hint"></small>
     </label>
-    <label class="field">
-      <span>Task</span>
-      <textarea id="f-task" name="task" rows="9" required placeholder="Describe what the agent should do. Be specific about files, behaviour and how to verify."></textarea>
-    </label>
+    <div class="field">
+      <div class="field-row">
+        <label for="f-task" id="f-task-label">Task</label>
+        <span class="spacer"></span>
+        <label class="check batch-toggle" title="Start many runs at once, grouped together"><input type="checkbox" id="f-batch"> Batch: one task per line</label>
+      </div>
+      <textarea id="f-task" name="task" rows="8" required></textarea>
+      <small id="f-task-hint" class="hint"></small>
+    </div>
     <div class="grid2">
       <label class="field">
-        <span>Title <em>(optional)</em></span>
+        <span id="f-title-label">Title <em>(optional)</em></span>
         <input id="f-title" name="title" autocomplete="off" placeholder="Short name for the board">
       </label>
       <label class="field">
@@ -128,8 +150,10 @@
       <label class="field">
         <span>Budget (USD)</span>
         <input id="f-budget" name="budget_usd" type="number" min="0" step="0.5" value="5">
+        <small id="f-budget-hint" class="hint"></small>
       </label>
     </div>
+    <div class="f-policy" id="f-policy" hidden></div>
     <div class="err" id="f-err"></div>
     <div class="dialog-foot">
       <span class="muted"><kbd>Ctrl</kbd>/<kbd>&#8984;</kbd>+<kbd>Enter</kbd> to start</span>
@@ -139,6 +163,41 @@
     </div>
   </form>
 </dialog>
+
+<dialog id="override-dialog" class="dialog dialog-sm">
+  <form id="override-form" method="dialog" novalidate>
+    <h2>Merge with override</h2>
+    <div class="mono small" id="ov-run"></div>
+    <p class="muted small ov-why">Policy blocks a normal merge of this run. You can merge anyway; your reason is recorded in the audit log with the run and the policy version.</p>
+    <div id="ov-findings"></div>
+    <label class="field">
+      <span>Reason <em>(required)</em></span>
+      <textarea id="ov-reason" rows="4" required placeholder="Why is this OK to merge? e.g. CI change reviewed with the infra team"></textarea>
+    </label>
+    <div class="err ov-err" id="ov-err"></div>
+    <div class="dialog-foot">
+      <span class="muted"><kbd>Ctrl</kbd>/<kbd>&#8984;</kbd>+<kbd>Enter</kbd> to merge</span>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="ov-cancel">Cancel</button>
+      <button type="submit" class="btn btn-warn" id="ov-submit">Merge with override</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="audit-dialog" class="dialog dialog-wide" aria-labelledby="audit-h">
+  <div class="dialog-pad">
+    <div class="audit-head">
+      <h2 id="audit-h">Audit log</h2>
+      <span class="muted small" id="audit-info"></span>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-sm" id="audit-refresh">Refresh</button>
+      <button type="button" class="btn btn-sm" id="audit-close">Close</button>
+    </div>
+    <div class="audit-body" id="audit-body"></div>
+  </div>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script src="/static/app.js"></script>
 </body>
