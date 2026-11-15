@@ -65,6 +65,8 @@ def attention(run: dict) -> tuple[int, str]:
         return 100, "Agent is blocked on your answer"
     if s == FINISHED:
         mc = run.get("merge_check") or {}
+        if mc.get("markers"):
+            return 85, "Finished, but conflict markers left in " + ", ".join(mc["markers"][:3])
         if mc.get("conflicts"):
             return 85, "Finished, but conflicts with " + (run.get("base_branch") or "target")
         if run.get("test_status") == "failed":

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Conductor</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="conn-banner" class="conn-banner" hidden>Connection lost &mdash; retrying&hellip;</div>
+
+<header class="topbar">
+  <div class="brand">Conductor</div>
+  <div class="counts" id="counts"></div>
+  <div class="spacer"></div>
+  <div class="disk" id="disk" title="Worktree disk usage"></div>
+  <button type="button" class="btn btn-primary" id="new-run-btn" title="New run (n)">New run</button>
+</header>
+
+<main class="layout">
+  <aside class="board" id="board" aria-label="Runs">
+    <section class="sec sec-needs" id="sec-needs">
+      <h2 class="sec-h">Needs you <span class="sec-n" id="n-needs"></span></h2>
+      <div class="cards" id="cards-needs"></div>
+    </section>
+    <section class="sec sec-progress" id="sec-progress">
+      <h2 class="sec-h">In progress <span class="sec-n" id="n-progress"></span></h2>
+      <div class="cards" id="cards-progress"></div>
+    </section>
+    <details class="sec sec-done" id="sec-done">
+      <summary class="sec-h">Done <span class="sec-n" id="n-done"></span></summary>
+      <div class="cards" id="cards-done"></div>
+    </details>
+    <div class="board-empty" id="board-empty" hidden>
+      <p>No runs yet.</p>
+      <p class="muted">Press <kbd>n</kbd> or click <b>New run</b> to start an agent.</p>
+    </div>
+  </aside>
+
+  <section class="detail" id="detail" aria-label="Run detail">
+    <div class="detail-empty" id="d-empty">
+      <p>Select a run to see what it is doing.</p>
+      <p class="muted"><kbd>j</kbd>/<kbd>k</kbd> move &middot; <kbd>n</kbd> new run</p>
+    </div>
+    <div class="detail-main" id="d-main" hidden>
+      <div id="d-head" class="d-head"></div>
+      <div class="d-actions-row">
+        <div id="d-actions" class="d-actions"></div>
+        <span id="d-action-msg" class="action-msg"></span>
+      </div>
+      <div id="d-question" class="question" hidden>
+        <div class="q-label">The agent is asking you</div>
+        <div class="q-text" id="q-text"></div>
+        <textarea id="q-answer" rows="4" placeholder="Type your answer&hellip; (Ctrl/Cmd+Enter to send)"></textarea>
+        <div class="q-row">
+          <button type="button" class="btn btn-warn" id="q-send">Send answer</button>
+          <span class="err" id="q-err"></span>
+        </div>
+      </div>
+      <div id="d-error" class="d-error" hidden></div>
+      <nav class="tabs" id="d-tabs" role="tablist">
+        <button type="button" role="tab" data-tab="review">Review</button>
+        <button type="button" role="tab" data-tab="activity">Activity</button>
+        <button type="button" role="tab" data-tab="task">Task</button>
+        <button type="button" role="tab" data-tab="log">Raw log</button>
+      </nav>
+      <div class="tab-body" id="tab-review" data-pane="review" hidden>
+        <div id="rv-summary"></div>
+        <div id="rv-checks"></div>
+        <div id="rv-diff"></div>
+      </div>
+      <div class="tab-body" id="tab-activity" data-pane="activity" hidden>
+        <ol class="events" id="events"></ol>
+      </div>
+      <div class="tab-body" id="tab-task" data-pane="task" hidden></div>
+      <div class="tab-body" id="tab-log" data-pane="log" hidden>
+        <div class="log-bar">
+          <label>Attempt <select id="log-attempt"></select></label>
+          <button type="button" class="btn btn-sm" id="log-refresh">Refresh</button>
+          <span class="muted" id="log-info"></span>
+        </div>
+        <pre class="log" id="log-pre"></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="new-dialog" class="dialog">
+  <form id="new-form" method="dialog" novalidate>
+    <h2>New run</h2>
+    <label class="field">
+      <span>Repository path</span>
+      <input id="f-repo" name="repo_path" list="recent-repos" required autocomplete="off" spellcheck="false" class="mono" placeholder="/home/you/project">
+      <datalist id="recent-repos"></datalist>
+      <small id="f-repo-status" class="hint"></small>
+    </label>
+    <label class="field">
+      <span>Task</span>
+      <textarea id="f-task" name="task" rows="9" required placeholder="Describe what the agent should do. Be specific about files, behaviour and how to verify."></textarea>
+    </label>
+    <div class="grid2">
+      <label class="field">
+        <span>Title <em>(optional)</em></span>
+        <input id="f-title" name="title" autocomplete="off" placeholder="Short name for the board">
+      </label>
+      <label class="field">
+        <span>Base branch</span>
+        <select id="f-base" name="base_branch"><option value="">(enter a repo first)</option></select>
+      </label>
+      <label class="field">
+        <span>Test command</span>
+        <input id="f-test" name="test_cmd" class="mono" autocomplete="off" spellcheck="false" placeholder="auto-detect">
+        <label class="check"><input type="checkbox" id="f-notest"> Skip tests</label>
+      </label>
+      <label class="field">
+        <span>Agent</span>
+        <select id="f-agent" name="agent">
+          <option value="claude">claude</option>
+          <option value="fake">fake</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Model <em>(optional)</em></span>
+        <input id="f-model" name="model" autocomplete="off" spellcheck="false" placeholder="agent default">
+      </label>
+      <label class="field">
+        <span>Budget (USD)</span>
+        <input id="f-budget" name="budget_usd" type="number" min="0" step="0.5" value="5">
+      </label>
+    </div>
+    <div class="err" id="f-err"></div>
+    <div class="dialog-foot">
+      <span class="muted"><kbd>Ctrl</kbd>/<kbd>&#8984;</kbd>+<kbd>Enter</kbd> to start</span>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="f-cancel">Cancel</button>
+      <button type="submit" class="btn btn-primary" id="f-submit">Start run</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

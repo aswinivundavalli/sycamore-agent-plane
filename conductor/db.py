@@ -89,8 +89,7 @@ class Store:
     def __init__(self, path: Path):
         self.path = Path(path)
         self._local = threading.local()
-        with self.conn() as c:
-            c.executescript(SCHEMA)
+        self.conn().executescript(SCHEMA)  # executescript manages its own transaction
 
     # -- connections -------------------------------------------------------
     def conn(self) -> sqlite3.Connection:
