@@ -1,0 +1,78 @@
+# HTTP API
+
+JSON in, JSON out. Errors: non-2xx with `{"error": "message"}`.
+Served by `conductor/server.py`; the UI in `conductor/static/` is the only client.
+
+## Run object
+
+```jsonc
+{
+  "id": 7,
+  "title": "Add retry to fetch()",
+  "task": "full free-text task",
+  "repo_path": "/home/me/proj",
+  "base_branch": "main",            // target branch the result merges into
+  "base_commit": "abc123…",
+  "branch": "conductor/run-7",
+  "worktree_path": "/home/me/.conductor/worktrees/run-7",
+  "agent": "claude",                // "claude" | "fake"
+  "model": null,
+  "test_cmd": "python3 -m unittest", // null = autodetect, "" = none
+  "budget_usd": 5.0,
+  "state": "running",               // queued|starting|running|waiting_input|testing|finished|failed|interrupted|accepted|rejected|cancelled
+  "activity": "Editing src/fetch.py", // short, current, human-readable
+  "activity_at": 1731690000.1,      // unix seconds
+  "last_output_at": 1731690000.1,
+  "stalled": false,                 // watchdog: no agent output for a while
+  "attempt": 1,
+  "session_id": "uuid",
+  "summary": "agent's final message (markdown-ish text)",
+  "question": "text of the question when state=waiting_input",
+  "cost_usd": 0.42,                 // total over attempts
+  "test_status": "passed",          // null | "none" | "running" | "passed" | "failed"
+  "test_output": "last ~20KB of test output",
+  "changed_files": ["src/fetch.py"],
+  "diff_stat": {"files": 2, "additions": 30, "deletions": 4},
+  "merge_check": {"clean": true, "conflicts": [], "target_commit": "…", "behind": 0, "checked_at": 1731690000},
+  "error": null,
+  "result_ref": "merge commit sha or kept branch name",
+  "created_at": 0, "updated_at": 0, "started_at": 0, "finished_at": 0,
+
+  // computed by the server:
+  "attention_score": 90,            // higher = look first; 0 = nothing to do
+  "attention_reason": "Finished, tests pass: ready to merge",
+  "overlaps": [{"run_id": 3, "title": "…", "state": "running", "files": ["src/fetch.py"]}],
+  "actions": ["accept", "accept_branch", "reject", "restart", "answer", "cancel", "resolve_conflicts", "retest"]
+}
+```
+
+`actions` lists the buttons that are legal right now; the UI shows only those.
+
+## Endpoints
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/runs` | | `{"runs":[Run…], "stats": {...}}` sorted by attention desc, then id desc |
+| POST | `/api/runs` | `{repo_path, task, title?, base_branch?, agent?, model?, test_cmd?, budget_usd?}` | `Run` (201) |
+| GET | `/api/runs/<id>` | | `Run` plus `"events": [Event…]` (last 300) |
+| GET | `/api/runs/<id>/diff` | | `{"diff": "unified diff text", "files": [{"path","status","additions","deletions"}], "merge_check": {...}}` |
+| GET | `/api/runs/<id>/log` | `?attempt=N` | `{"lines": ["raw stream-json line", …]}` (last 500) |
+| POST | `/api/runs/<id>/answer` | `{text}` | `Run` – only in `waiting_input` |
+| POST | `/api/runs/<id>/restart` | `{note?}` | `Run` – from `interrupted` / `failed` / `finished` |
+| POST | `/api/runs/<id>/cancel` | | `Run` – kills the agent, cleans up |
+| POST | `/api/runs/<id>/accept` | `{mode: "merge" \| "branch"}` | `Run` – merge into base_branch, or keep branch only |
+| POST | `/api/runs/<id>/reject` | | `Run` |
+| POST | `/api/runs/<id>/resolve_conflicts` | | `Run` – queues an attempt that merges base into the branch and asks the agent to fix conflicts |
+| POST | `/api/runs/<id>/retest` | | `Run` |
+| GET | `/api/repo?path=…` | | `{"path","root","branches":[…],"current_branch","test_cmd_guess"}` or 400 |
+| GET | `/api/stats` | | `{"counts": {state: n}, "worktree_bytes": n, "worktrees": n, "max_parallel": n, "recent_repos": [paths]}` |
+
+`stats` in `/api/runs` is the same object as `/api/stats`.
+
+## Event
+
+```json
+{"id": 1, "run_id": 7, "ts": 1731690000.1, "attempt": 1,
+ "kind": "state|activity|tool|text|question|answer|result|test|error|info",
+ "message": "human readable", "data": {}}
+```
