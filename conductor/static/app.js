@@ -3,7 +3,7 @@
  * Sections: utils · api · state · board render (next3 strip, groups, paged
  * sections) · reaching you · detail render · review/diff render · activity
  * render · raw log · policy panel · override dialog · toasts · group bulk ops ·
- * audit · dialog · keyboard · polling · boot.
+ * audit · workflows · schedules · dialog · keyboard · polling · boot.
  *
  * The board talks to the paginated API (view=needs_you|active|done, offset
  * paging) and only polls the pages that are currently on screen; Done and
@@ -199,6 +199,10 @@ const API = {
   repo: (path) => api("GET", "/api/repo?path=" + encodeURIComponent(path)),
   policy: (repo) => api("GET", "/api/policy" + qs({ repo })),
   audit: (params) => api("GET", "/api/audit" + qs(params)),
+  workflows: (repo) => api("GET", "/api/workflows" + qs({ repo })),
+  schedules: () => api("GET", "/api/schedules"),
+  createSchedule: (body) => api("POST", "/api/schedules", body),
+  scheduleOp: (id, op) => api("POST", "/api/schedules/" + id + "/" + op, {}),
 };
 
 /* ───────────────────────── state ───────────────────────── */
@@ -318,6 +322,14 @@ function diffStatHTML(ds) {
 
 function overlapChips(overlaps) {
   if (!overlaps || !overlaps.length) return "";
+  if (overlaps.length > 1) {
+    // many runs touching the same files: one chip, details in the tooltip
+    const files = [...new Set(overlaps.flatMap((o) => o.files || []))];
+    const names = files.slice(0, 2).map(basename).join(", ") + (files.length > 2 ? " +" + (files.length - 2) : "");
+    const ids = overlaps.slice(0, 3).map((o) => "#" + o.run_id).join(" ") + (overlaps.length > 3 ? " +" + (overlaps.length - 3) : "");
+    const tip = overlaps.map((o) => "Run #" + o.run_id + " (" + (o.state || "") + ") " + (o.title || "") + ": " + (o.files || []).join(", ")).join("\n");
+    return '<span class="chip chip-overlap" title="' + esc(tip) + '">⚠ also editing ' + esc(names) + ": " + esc(ids) + "</span>";
+  }
   return overlaps.map((o) => {
     const files = o.files || [];
     const names = files.slice(0, 2).map(basename).join(", ") + (files.length > 2 ? " +" + (files.length - 2) : "");
@@ -326,9 +338,11 @@ function overlapChips(overlaps) {
   }).join("");
 }
 
-/* Violations that stop the agent, block the merge or need an override. */
+/* Findings that stop the agent, block the merge or need an override: live
+   violations plus pre-merge findings from merge_check.policy. */
 function hardViolations(run) {
-  return (run.violations || []).filter((v) => v && POLICY_HARD.has(v.action));
+  const mc = run.merge_check || {};
+  return [...(run.violations || []), ...(mc.policy || [])].filter((v) => v && POLICY_HARD.has(v.action));
 }
 
 function policyChip(run) {
@@ -344,12 +358,26 @@ function runChips(run) {
 }
 
 /* Color for an attention_reason line: green = ready to merge, red = failed / policy, amber = needs a decision. */
+const POLICY_REASON = /^(Policy violation|Stopped by policy|Needs approval)\b/;
+
 function reasonTone(run) {
+  const reason = run.attention_reason || "";
+  if (/^Needs approval\b/.test(reason)) return "tone-warn";
+  if (POLICY_REASON.test(reason) || run.attention_score === 95) return "tone-bad";
   if (run.state !== "waiting_input" && hardViolations(run).length) return "tone-bad";
   if (run.state === "finished" && ((run.attention_score || 0) >= 90 || (run.actions || []).includes("accept"))) return "tone-good";
   if (run.state === "failed") return "tone-bad";
   if (run.state === "interrupted") return "tone-orange";
   return "tone-warn";
+}
+
+/* The attention reason to show; a workflow gate says which step it would start. */
+function reasonText(run) {
+  if (isWorkflowGate(run)) {
+    const next = wfSteps(run)[(run.workflow_step || 0) + 1];
+    if (next) return "Approve next step: " + next.id;
+  }
+  return run.attention_reason || "";
 }
 
 function needsYou(run) { return !TERMINAL.has(run.state) && (run.attention_score || 0) >= NEEDS_SCORE; }
@@ -359,7 +387,7 @@ function cardHTML(run, section) {
   parts.push('<div class="c-top"><span class="c-id">#' + esc(run.id) + '</span><span class="c-title">' +
     esc(runTitle(run)) + "</span>" + pill(run.state) + "</div>");
   if ((section === "needs" || (section === "group" && needsYou(run))) && run.attention_reason) {
-    parts.push('<div class="c-reason ' + reasonTone(run) + '">' + esc(run.attention_reason) + "</div>");
+    parts.push('<div class="c-reason ' + reasonTone(run) + '">' + esc(reasonText(run)) + "</div>");
   }
   if (run.activity && section !== "done" && !TERMINAL.has(run.state)) {
     parts.push('<div class="c-activity"><span class="act-text">' + esc(run.activity) +
@@ -367,7 +395,8 @@ function cardHTML(run, section) {
   }
   const meta = [];
   meta.push('<span class="mono c-repo" title="' + esc(run.repo_path) + '">' + esc(basename(run.repo_path)) + "</span>");
-  if (run.branch) meta.push('<span class="mono c-branch" title="' + esc(run.branch) + '">' + esc(run.branch) + "</span>");
+  if (run.branch && !run.workflow) meta.push('<span class="mono c-branch" title="' + esc(run.branch) + '">' + esc(run.branch) + "</span>");
+  const wf = workflowStepHTML(run); if (wf) meta.push(wf);
   const ds = diffStatHTML(run.diff_stat); if (ds) meta.push(ds);
   const tb = run.state === "testing" ? "" : testBadge(run.test_status); if (tb) meta.push(tb);
   if (run.cost_usd) meta.push('<span class="cost">' + esc(fmtCost(run.cost_usd)) + "</span>");
@@ -464,8 +493,11 @@ function renderFilterNote() {
 /* The single button a next3 card offers, matching what the run is waiting on. */
 function primaryAction(run) {
   const acts = run.actions || [];
+  if (isWorkflowGate(run)) return { kind: "answer", label: "Review step", cls: "btn-warn" };
   if (run.state === "waiting_input") return { kind: "answer", label: "Answer", cls: "btn-warn" };
-  if (hardViolations(run).length || acts.includes("accept_override")) return { kind: "review", label: "Review", cls: "btn-danger" };
+  if (POLICY_REASON.test(run.attention_reason || "") || hardViolations(run).length || acts.includes("accept_override")) {
+    return { kind: "review", label: "Review", cls: reasonTone(run) === "tone-warn" ? "btn-warn-soft" : "btn-danger" };
+  }
   if (acts.includes("accept")) return { kind: "merge", label: "Merge", cls: "btn-success" };
   return { kind: "open", label: "Open", cls: "" };
 }
@@ -474,7 +506,7 @@ function next3HTML(run) {
   const pa = primaryAction(run);
   const tone = reasonTone(run).replace("tone-", "t-");
   return '<div class="n3-card ' + tone + (run.id === state.selectedId ? " selected" : "") + '" data-id="' + esc(run.id) + '">' +
-    '<div class="n3-reason ' + reasonTone(run) + '" title="' + esc(run.attention_reason) + '">' + esc(run.attention_reason || STATE_LABEL[run.state] || run.state) + "</div>" +
+    '<div class="n3-reason ' + reasonTone(run) + '" title="' + esc(reasonText(run)) + '">' + esc(reasonText(run) || STATE_LABEL[run.state] || run.state) + "</div>" +
     '<div class="n3-title"><span class="c-id">#' + esc(run.id) + '</span> <span title="' + esc(runTitle(run)) + '">' + esc(runTitle(run)) + "</span></div>" +
     '<div class="n3-foot"><span class="mono c-repo" title="' + esc(run.repo_path) + '">' + esc(basename(run.repo_path)) + "</span>" +
     (run.group_title ? '<span class="n3-group" title="' + esc(run.group_title) + '">' + esc(run.group_title) + "</span>" : "") +
@@ -763,7 +795,7 @@ function metaItem(label, value, cls) {
 
 function renderHead(run) {
   const reason = run.attention_reason && (run.attention_score || 0) >= NEEDS_SCORE
-    ? '<div class="d-reason ' + reasonTone(run) + '">' + esc(run.attention_reason) + "</div>" : "";
+    ? '<div class="d-reason ' + reasonTone(run) + '">' + esc(reasonText(run)) + "</div>" : "";
   const chips = runChips(run);
   const act = run.activity && !TERMINAL.has(run.state)
     ? '<div class="d-activity">' + esc(run.activity) + ' <span class="rel muted" data-ts="' + esc(run.activity_at || "") + '"></span></div>' : "";
@@ -771,6 +803,7 @@ function renderHead(run) {
     '<div class="d-title-row"><span class="d-id">#' + esc(run.id) + '</span><h1 class="d-title">' + esc(runTitle(run)) +
     "</h1>" + pill(run.state) + testBadge(run.test_status) + "</div>" + reason + act +
     (chips ? '<div class="c-chips">' + chips + "</div>" : "") +
+    workflowTrackerHTML(run) +
     '<div class="d-meta">' +
       metaItem("branch", run.branch, "mono") +
       metaItem("base", run.base_branch, "mono") +
@@ -826,26 +859,39 @@ function renderQuestion(run) {
   const show = run.state === "waiting_input";
   box.hidden = !show;
   if (show) {
+    const gate = isWorkflowGate(run);
+    box.classList.toggle("gate", gate);
+    $("#q-label").textContent = gate ? "Approve the next step" : "The agent is asking you";
+    $("#q-answer").placeholder = gate
+      ? "Optional: instructions for the next step… (Ctrl/Cmd+Enter to send)"
+      : "Type your answer… (Ctrl/Cmd+Enter to send)";
+    $("#q-approve").hidden = !gate;
+    $("#q-send").textContent = gate ? "Send instructions" : "Send answer";
+    $("#q-send").className = "btn " + (gate ? "" : "btn-warn");
     setHTML($("#q-text"), miniMarkdown(run.question || "(the agent did not include question text — see Activity)"));
-    $("#q-send").disabled = !(run.actions || []).includes("answer");
+    const can = (run.actions || []).includes("answer");
+    $("#q-send").disabled = !can;
+    $("#q-approve").disabled = !can;
   }
 }
 
-async function sendAnswer() {
+/* text: send this instead of the textarea (the gate's "Approve" button sends "approve"). */
+async function sendAnswer(text) {
   const run = state.detail, ta = $("#q-answer"), err = $("#q-err");
   if (!run) return;
-  const text = ta.value.trim();
-  if (!text) { err.textContent = "Write an answer first."; ta.focus(); return; }
+  const fromBox = typeof text !== "string";
+  if (fromBox) text = ta.value.trim();
+  if (!text) { err.textContent = isWorkflowGate(run) ? "Write instructions first, or click Approve." : "Write an answer first."; ta.focus(); return; }
   err.textContent = "";
   $("#q-send").disabled = true;
   try {
     const updated = await API.action(run.id, "answer", { text });
-    ta.value = ""; state.drafts.delete(run.id);
+    if (fromBox) { ta.value = ""; state.drafts.delete(run.id); }
     if (updated && updated.id === state.selectedId) renderDetail(Object.assign({}, state.detail, updated, { events: undefined }));
   } catch (e) {
     err.textContent = e.message;
   } finally {
-    $("#q-send").disabled = false;
+    $("#q-send").disabled = false; $("#q-approve").disabled = false;
     pollBoardNow(); pollDetailNow();
   }
 }
@@ -1080,7 +1126,8 @@ function renderEvents(events) {
   for (const ev of events) {
     if (ev.id <= state.lastEventId) continue;
     const li = document.createElement("li");
-    li.className = "ev ev-" + (KIND_ICON[ev.kind] ? ev.kind : "info");
+    li.className = "ev ev-" + (KIND_ICON[ev.kind] ? ev.kind : "info") +
+      (/^Workflow (step\b|"[^"]*" complete|stopped)/.test(ev.message || "") ? " ev-wfstep" : "");
     li.innerHTML = eventHTML(ev);
     frag.appendChild(li);
     state.lastEventId = ev.id; added++;
@@ -1364,6 +1411,281 @@ async function loadAudit() {
   }
 }
 
+/* ───────────────────────── workflows ───────────────────────── */
+
+function wfSteps(run) {
+  return (run.workflow_def && run.workflow_def.steps) || [];
+}
+
+/* Waiting at a workflow approval gate (not an agent question). */
+function isWorkflowGate(run) {
+  return !!run && run.state === "waiting_input" && !!run.workflow && /^Step /.test(run.question || "");
+}
+
+/* Card line: "step 2 of 4 · add-tests". */
+function workflowStepHTML(run) {
+  const steps = wfSteps(run);
+  if (!run.workflow || !steps.length) return "";
+  const i = Math.min(run.workflow_step || 0, steps.length - 1);
+  const gate = isWorkflowGate(run);
+  const txt = gate && steps[i + 1]
+    ? "step " + (i + 1) + " of " + steps.length + " done · approve " + steps[i + 1].id
+    : "step " + (i + 1) + " of " + steps.length + " · " + steps[i].id;
+  return '<span class="wf-step" title="Workflow ' + esc(run.workflow) + '">' + esc(txt) + "</span>";
+}
+
+/* Per step: done | current | next (awaiting approval) | failed | pending. */
+function workflowStepStates(run) {
+  const steps = wfSteps(run), n = steps.length;
+  const i = Math.min(run.workflow_step || 0, Math.max(0, n - 1));
+  const finishedOk = run.state === "finished" || run.state === "accepted";
+  const stopped = ["failed", "interrupted", "rejected", "cancelled"].includes(run.state);
+  return steps.map((s, k) => {
+    if (k < i) return "done";
+    if (k === i) {
+      if (isWorkflowGate(run) || finishedOk) return "done";
+      return stopped ? "failed" : "current";
+    }
+    if (k === i + 1 && isWorkflowGate(run)) return "next";
+    return "pending";
+  });
+}
+
+const WF_MARK = { done: "✓", current: "●", next: "?", failed: "✕", pending: "" };
+
+function workflowTrackerHTML(run) {
+  const steps = wfSteps(run);
+  if (!run.workflow || !steps.length) return "";
+  const st = workflowStepStates(run);
+  const label = { done: "done", current: "in progress", next: "awaiting your approval", failed: "stopped here", pending: "pending" };
+  return '<div class="wf-track"><span class="wf-name" title="' + esc((run.workflow_def && run.workflow_def.description) || "") + '">' +
+    "Workflow <b>" + esc(run.workflow) + "</b></span><ol>" + steps.map((s, k) =>
+      '<li class="wf-' + st[k] + '" title="Step ' + (k + 1) + ": " + esc(s.id) + " — " + label[st[k]] +
+      (s.gate === "approve" ? " · needs approval to continue" : "") + '"><span class="wf-dot">' + (WF_MARK[st[k]] || (k + 1)) + "</span>" +
+      '<span class="wf-id">' + esc(s.id) + "</span>" + (s.gate === "approve" ? '<span class="wf-gate" title="Approval gate after this step">gate</span>' : "") +
+      "</li>").join("") + "</ol></div>";
+}
+
+/* Compact numbered step list for the new-run / new-schedule forms. */
+function workflowStepsListHTML(wf) {
+  if (!wf) return "";
+  const steps = wf.steps || (wf.step_ids || []).map((id) => ({ id }));
+  return (wf.description ? '<div class="muted small">' + esc(wf.description) + "</div>" : "") +
+    '<ol class="wf-list">' + steps.map((s) =>
+      '<li><span class="mono">' + esc(s.id) + "</span>" +
+      (s.gate === "approve" ? ' <span class="pbadge pb-amber">needs approval</span>' : "") +
+      (s.tests === "skip" ? ' <span class="pbadge pb-gray">tests skipped</span>' : "") + "</li>").join("") + "</ol>";
+}
+
+const workflowCache = new Map();   // repo path -> [Workflow] | {error}
+
+async function loadWorkflows(repo) {
+  try {
+    const d = await API.workflows(repo);
+    const list = (d && d.workflows) || [];
+    workflowCache.set(repo, list);
+    return list;
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/* Fill a workflow <select> (keeps the current choice when it still exists) and its step list. */
+function fillWorkflowSelect(sel, stepsBox, list) {
+  const cur = sel.value;
+  if (!Array.isArray(list)) {
+    sel.innerHTML = '<option value="">None — single task</option>';
+    setHTML(stepsBox, list && list.error ? '<div class="err small">Workflows unavailable: ' + esc(list.error) + "</div>" : "");
+    return;
+  }
+  sel.innerHTML = '<option value="">None — single task</option>' + list.map((w) =>
+    '<option value="' + esc(w.name) + '">' + esc(w.name) + " (" + esc(plural((w.steps || w.step_ids || []).length, "step")) + ")</option>").join("");
+  sel._list = list;
+  sel.value = list.some((w) => w.name === cur) ? cur : "";
+  showWorkflowSteps(sel, stepsBox);
+}
+
+function showWorkflowSteps(sel, stepsBox) {
+  const wf = (sel._list || []).find((w) => w.name === sel.value);
+  stepsBox.hidden = !wf;
+  setHTML(stepsBox, workflowStepsListHTML(wf));
+}
+
+/* ───────────────────────── schedules ───────────────────────── */
+
+function relFuture(ts) {
+  if (!ts) return "";
+  const s = Math.round(ts - Date.now() / 1000);
+  if (s <= 0) return "due now";
+  if (s < 60) return "in " + s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return "in " + m + "m";
+  const h = Math.floor(m / 60);
+  if (h < 24) return "in " + h + "h " + (m % 60) + "m";
+  return "in " + Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+
+function utcTime(ts) {
+  if (!ts) return "";
+  return new Date(ts * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
+const schedState = { list: [], timer: null, repoSeq: 0 };
+
+function scheduleRowHTML(sc) {
+  const trig = sc.kind === "cron"
+    ? '<span class="sc-kind">cron</span> <code>' + esc(sc.cron) + "</code>"
+    : '<span class="sc-kind">on change</span> <code>' + esc(sc.watch_ref || sc.base_branch || "") + "</code>" +
+      (sc.poll_secs ? ' <span class="muted">every ' + esc(sc.poll_secs) + "s</span>" : "");
+  const next = sc.enabled && sc.next_fire_at
+    ? '<div>' + esc(relFuture(sc.next_fire_at)) + '</div><div class="muted mono small">' + esc(utcTime(sc.next_fire_at)) + "</div>"
+    : '<span class="muted">' + (sc.enabled ? "–" : "paused") + "</span>";
+  const last = sc.last_fired_at
+    ? '<div class="rel" data-ts="' + esc(sc.last_fired_at) + '"></div><div class="muted mono small">' + esc(utcTime(sc.last_fired_at)) + "</div>"
+    : '<span class="muted">never</span>';
+  const run = sc.last_run_id ? '<a href="#run-' + esc(sc.last_run_id) + '" data-sc-run="' + esc(sc.last_run_id) + '" class="mono">#' + esc(sc.last_run_id) + "</a>" : '<span class="muted">–</span>';
+  return '<tr data-sc="' + esc(sc.id) + '" class="' + (sc.enabled ? "" : "sc-paused") + '">' +
+    '<td><div class="sc-name">' + esc(sc.name) + "</div>" +
+      '<div class="muted small sc-task" title="' + esc(sc.task) + '">' + esc(clip(sc.task, 70)) + "</div>" +
+      (sc.workflow ? '<div class="small"><span class="wf-step">workflow ' + esc(sc.workflow) + "</span></div>" : "") + "</td>" +
+    '<td class="mono" title="' + esc(sc.repo_path) + '">' + esc(basename(sc.repo_path)) +
+      (sc.base_branch ? '<div class="muted small">' + esc(sc.base_branch) + "</div>" : "") + "</td>" +
+    "<td>" + trig + '<div class="muted small">overlap ' + esc(sc.overlap || "skip") + " · catch-up " + esc(sc.catch_up || "once") + "</div></td>" +
+    "<td>" + next + "</td><td>" + last + "</td>" +
+    '<td class="sc-note" title="' + esc(sc.last_note) + '">' + esc(clip(sc.last_note, 80)) + "</td>" +
+    "<td>" + run + "</td>" +
+    '<td><label class="switch" title="' + (sc.enabled ? "Enabled: click to pause" : "Paused: click to resume") + '">' +
+      '<input type="checkbox" data-sc-op="' + (sc.enabled ? "pause" : "resume") + '"' + (sc.enabled ? " checked" : "") + '><span class="slider"></span></label></td>' +
+    '<td class="sc-acts"><button type="button" class="btn btn-sm" data-sc-op="' + (sc.enabled ? "pause" : "resume") + '">' + (sc.enabled ? "Pause" : "Resume") + "</button>" +
+      '<button type="button" class="btn btn-sm" data-sc-op="run_now">Run now</button>' +
+      '<button type="button" class="btn btn-sm btn-danger" data-sc-op="delete">Delete</button></td></tr>';
+}
+
+function renderSchedules() {
+  const list = schedState.list;
+  setHTML($("#sc-body"), list.length
+    ? '<table class="atable sc-table"><thead><tr><th>Name</th><th>Repo</th><th>Trigger</th><th>Next</th><th>Last fired</th>' +
+      "<th>Last note</th><th>Last run</th><th>On</th><th></th></tr></thead><tbody>" + list.map(scheduleRowHTML).join("") + "</tbody></table>"
+    : '<div class="muted pad">No schedules yet. Use <b>New schedule</b> to run a task on a timer or whenever a branch changes.</div>');
+}
+
+async function loadSchedules() {
+  const info = $("#sc-info");
+  try {
+    const d = await API.schedules();
+    schedState.list = (d && d.schedules) || [];
+    renderSchedules();
+    info.textContent = plural(schedState.list.length, "schedule") + " · loaded " + clockTime(Date.now() / 1000);
+  } catch (e) {
+    info.textContent = "";
+    setHTML($("#sc-body"), '<div class="err pad">Could not load schedules: ' + esc(e.message) + "</div>");
+  }
+}
+
+function openSchedules() {
+  const dlg = $("#sched-dialog");
+  if (!dlg.open) dlg.showModal();
+  loadSchedules();
+  clearInterval(schedState.timer);
+  schedState.timer = setInterval(() => { if ($("#sched-dialog").open) loadSchedules(); else clearInterval(schedState.timer); }, 5000);
+}
+
+async function scheduleOp(id, op, el) {
+  const sc = schedState.list.find((x) => x.id === id);
+  if (op === "delete" && !confirm("Delete schedule “" + (sc ? sc.name : id) + "”? Runs it already started are kept.")) {
+    return;
+  }
+  el.disabled = true;
+  try {
+    await API.scheduleOp(id, op);
+    if (op === "run_now") { toast("Fired <b>" + esc(sc ? sc.name : "#" + id) + "</b>: its run will show on the board.", "ok"); pollBoardNow(); }
+  } catch (e) {
+    toast("Schedule action failed: " + esc(e.message), "err");
+  } finally {
+    el.disabled = false;
+    $("#sc-body")._html = undefined;   // the checkbox may be out of sync with the server
+    loadSchedules();
+  }
+}
+
+/* new-schedule form */
+
+function toggleScheduleForm(show) {
+  const form = $("#sc-form");
+  form.hidden = show === undefined ? !form.hidden : !show;
+  $("#sc-new").textContent = form.hidden ? "New schedule" : "Hide form";
+  if (!form.hidden) {
+    const repo = $("#sc-repo");
+    if (!repo.value) repo.value = lsGet(LS_REPO) || ((state.stats && state.stats.recent_repos) || [])[0] || "";
+    if (repo.value) checkScheduleRepo();
+    const agent = lsGet(LS_AGENT); if (agent) $("#sc-agent").value = agent;
+    syncScheduleKind();
+    $("#sc-name").focus();
+  }
+}
+
+function syncScheduleKind() {
+  const cron = $("#sc-kind-cron").checked;
+  $("#sc-cron-row").hidden = !cron;
+  $("#sc-change-row").hidden = cron;
+}
+
+async function checkScheduleRepo() {
+  const path = $("#sc-repo").value.trim(), status = $("#sc-repo-status"), sel = $("#sc-base");
+  if (!path) { status.textContent = ""; return; }
+  if (sel.dataset.path === path) return;
+  const seq = ++schedState.repoSeq;
+  status.className = "hint"; status.textContent = "Checking…";
+  try {
+    const [r, wfs] = await Promise.all([API.repo(path), loadWorkflows(path)]);
+    if (seq !== schedState.repoSeq) return;
+    sel.dataset.path = path;
+    const branches = r.branches || [];
+    sel.innerHTML = branches.map((b) => '<option value="' + esc(b) + '">' + esc(b) + "</option>").join("") || '<option value="">(no branches)</option>';
+    sel.value = r.current_branch || branches[0] || "";
+    if (!$("#sc-ref").value) $("#sc-ref").placeholder = sel.value || "main";
+    status.className = "hint ok"; status.textContent = "✓ git repo" + (r.current_branch ? " · on " + r.current_branch : "");
+    fillWorkflowSelect($("#sc-workflow"), $("#sc-wf-steps"), wfs);
+  } catch (e) {
+    if (seq !== schedState.repoSeq) return;
+    delete sel.dataset.path;
+    sel.innerHTML = '<option value="">(enter a valid repo)</option>';
+    status.className = "hint err"; status.textContent = e.message;
+  }
+}
+
+async function submitSchedule() {
+  const err = $("#sc-err"), btn = $("#sc-submit");
+  const v = (id) => $(id).value.trim();
+  const cron = $("#sc-kind-cron").checked;
+  const body = { name: v("#sc-name"), repo_path: v("#sc-repo"), task: v("#sc-task"), kind: cron ? "cron" : "on_change",
+    agent: $("#sc-agent").value, overlap: $("#sc-overlap").value, catch_up: $("#sc-catchup").value };
+  const missing = [!body.name && "a name", !body.repo_path && "a repository", !body.task && "a task",
+    cron && !v("#sc-cron") && "a cron expression"].filter(Boolean);
+  if (missing.length) { err.textContent = "Give the schedule " + missing.join(", ") + "."; return; }
+  if (cron) body.cron = v("#sc-cron");
+  else {
+    body.watch_ref = v("#sc-ref") || $("#sc-base").value || undefined;
+    if (v("#sc-poll")) body.poll_secs = Number(v("#sc-poll"));
+  }
+  if ($("#sc-base").value) body.base_branch = $("#sc-base").value;
+  if ($("#sc-workflow").value) body.workflow = $("#sc-workflow").value;
+  if (v("#sc-budget") !== "" && !isNaN(Number(v("#sc-budget")))) body.budget_usd = Number(v("#sc-budget"));
+  err.textContent = ""; btn.disabled = true; btn.textContent = "Creating…";
+  try {
+    const sc = await API.createSchedule(body);
+    toast("Created schedule <b>" + esc(sc && sc.name || body.name) + "</b>" +
+      (sc && sc.next_fire_at ? " · first run " + esc(relFuture(sc.next_fire_at)) : ""), "ok");
+    for (const id of ["#sc-name", "#sc-task", "#sc-cron"]) $(id).value = "";
+    toggleScheduleForm(false);
+    loadSchedules();
+  } catch (e) {
+    err.textContent = e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "Create schedule";
+  }
+}
+
 /* ───────────────────────── dialog ───────────────────────── */
 
 const LS_REPO = "conductor.lastRepo", LS_AGENT = "conductor.lastAgent";
@@ -1410,6 +1732,7 @@ async function checkRepo() {
     status.className = "hint ok";
     status.textContent = "✓ git repo" + (r.root && r.root !== path ? " at " + r.root : "") + (r.current_branch ? " · on " + r.current_branch : "");
     loadDialogPolicy(path, seq);
+    loadWorkflows(path).then((wfs) => { if (seq === repoCheckSeq) fillWorkflowSelect($("#f-workflow"), $("#f-wf-steps"), wfs); });
   } catch (e) {
     if (seq !== repoCheckSeq) return;
     delete sel.dataset.path;
@@ -1418,6 +1741,7 @@ async function checkRepo() {
     status.className = "hint err";
     status.textContent = e.message;
     clearDialogPolicy();
+    fillWorkflowSelect($("#f-workflow"), $("#f-wf-steps"), []);
   }
 }
 
@@ -1502,6 +1826,7 @@ async function submitDialog() {
   else { const t = $("#f-test").value.trim(); if (t) body.test_cmd = t; }
   const budget = $("#f-budget").value;
   if (budget !== "" && !isNaN(Number(budget))) body.budget_usd = Number(budget);
+  const workflow = $("#f-workflow").value; if (workflow) body.workflow = workflow;
   let tasks = null;
   if (batch) {
     tasks = batchTasks();
@@ -1720,6 +2045,29 @@ function wire() {
   });
   $("#repo-filter").addEventListener("change", (e) => setFilter({ repo: e.target.value }));
   $("#audit-btn").addEventListener("click", openAudit);
+
+  // schedules
+  $("#sched-btn").addEventListener("click", openSchedules);
+  $("#sc-refresh").addEventListener("click", loadSchedules);
+  $("#sc-close").addEventListener("click", () => $("#sched-dialog").close());
+  $("#sc-new").addEventListener("click", () => toggleScheduleForm());
+  $("#sc-cancel").addEventListener("click", () => toggleScheduleForm(false));
+  $("#sc-form").addEventListener("submit", (e) => { e.preventDefault(); submitSchedule(); });
+  $("#sc-repo").addEventListener("blur", checkScheduleRepo);
+  $("#sc-repo").addEventListener("change", checkScheduleRepo);
+  for (const id of ["#sc-kind-cron", "#sc-kind-change"]) $(id).addEventListener("change", syncScheduleKind);
+  $("#sc-workflow").addEventListener("change", (e) => showWorkflowSteps(e.target, $("#sc-wf-steps")));
+  $("#sched-dialog").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) { e.currentTarget.close(); return; }
+    const a = e.target.closest("[data-sc-run]");
+    if (a) { e.preventDefault(); $("#sched-dialog").close(); selectRun(Number(a.dataset.scRun), { scroll: true }); return; }
+    const b = e.target.closest("button[data-sc-op]");
+    if (b && !b.disabled) scheduleOp(Number(b.closest("tr").dataset.sc), b.dataset.scOp, b);
+  });
+  $("#sched-dialog").addEventListener("change", (e) => {
+    const c = e.target.closest("input[data-sc-op]");
+    if (c) scheduleOp(Number(c.closest("tr").dataset.sc), c.dataset.scOp, c);
+  });
   $("#audit-refresh").addEventListener("click", loadAudit);
   $("#audit-close").addEventListener("click", () => $("#audit-dialog").close());
   $("#audit-dialog").addEventListener("click", (e) => {
@@ -1736,7 +2084,8 @@ function wire() {
     const b = e.target.closest("button[data-action]");
     if (b && !b.disabled) doAction(b.dataset.action, b);
   });
-  $("#q-send").addEventListener("click", sendAnswer);
+  $("#q-send").addEventListener("click", () => sendAnswer());
+  $("#q-approve").addEventListener("click", () => sendAnswer("approve"));
   $("#q-answer").addEventListener("input", (e) => { if (state.selectedId) state.drafts.set(state.selectedId, e.target.value); });
   $("#q-answer").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendAnswer(); }
@@ -1797,6 +2146,7 @@ function wire() {
   $("#f-base").addEventListener("change", (e) => { e.target._userPicked = true; });
   $("#f-notest").addEventListener("change", (e) => { $("#f-test").disabled = e.target.checked; });
   $("#f-batch").addEventListener("change", syncBatchUi);
+  $("#f-workflow").addEventListener("change", (e) => showWorkflowSteps(e.target, $("#f-wf-steps")));
   $("#f-task").addEventListener("input", () => { if ($("#f-batch").checked) syncBatchUi(); });
   $("#f-budget").addEventListener("input", () => applyBudgetCap(false));
   $("#f-budget").addEventListener("change", () => applyBudgetCap(true));

@@ -19,6 +19,7 @@
   </div>
   <div class="spacer"></div>
   <div class="disk" id="disk" title="Worktree disk usage"></div>
+  <button type="button" class="btn-link topbar-link" id="sched-btn" title="Run tasks on a timer or when a branch changes">Schedules</button>
   <button type="button" class="btn-link topbar-link" id="audit-btn" title="Policy overrides, bulk actions and other recorded decisions">Audit</button>
   <button type="button" class="btn" id="notify-btn" hidden title="Get a desktop notification when a run needs you">Notify me</button>
   <button type="button" class="btn btn-primary" id="new-run-btn" title="New run (n)">New run</button>
@@ -67,10 +68,11 @@
         <span id="d-action-msg" class="action-msg"></span>
       </div>
       <div id="d-question" class="question" hidden>
-        <div class="q-label">The agent is asking you</div>
+        <div class="q-label" id="q-label">The agent is asking you</div>
         <div class="q-text" id="q-text"></div>
         <textarea id="q-answer" rows="4" placeholder="Type your answer&hellip; (Ctrl/Cmd+Enter to send)"></textarea>
         <div class="q-row">
+          <button type="button" class="btn btn-success" id="q-approve" hidden>Approve</button>
           <button type="button" class="btn btn-warn" id="q-send">Send answer</button>
           <span class="err" id="q-err"></span>
         </div>
@@ -121,6 +123,13 @@
       </div>
       <textarea id="f-task" name="task" rows="8" required></textarea>
       <small id="f-task-hint" class="hint"></small>
+    </div>
+    <div class="wf-field">
+      <label class="field">
+        <span>Workflow</span>
+        <select id="f-workflow" name="workflow"><option value="">None — single task</option></select>
+      </label>
+      <div class="wf-steps" id="f-wf-steps" hidden></div>
     </div>
     <div class="grid2">
       <label class="field">
@@ -194,6 +203,63 @@
       <button type="button" class="btn btn-sm" id="audit-close">Close</button>
     </div>
     <div class="audit-body" id="audit-body"></div>
+  </div>
+</dialog>
+
+<dialog id="sched-dialog" class="dialog dialog-wide" aria-labelledby="sc-h">
+  <div class="dialog-pad">
+    <div class="audit-head">
+      <h2 id="sc-h">Schedules</h2>
+      <span class="muted small" id="sc-info"></span>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-sm btn-primary" id="sc-new">New schedule</button>
+      <button type="button" class="btn btn-sm" id="sc-refresh">Refresh</button>
+      <button type="button" class="btn btn-sm" id="sc-close">Close</button>
+    </div>
+    <form id="sc-form" class="sc-form" hidden novalidate>
+      <div class="grid2">
+        <label class="field"><span>Name</span><input id="sc-name" autocomplete="off" placeholder="e.g. Nightly lint sweep"></label>
+        <label class="field"><span>Repository path</span>
+          <input id="sc-repo" class="mono" list="recent-repos" autocomplete="off" spellcheck="false" placeholder="/home/you/project">
+          <small id="sc-repo-status" class="hint"></small></label>
+        <label class="field"><span>Base branch</span><select id="sc-base"><option value="">(enter a repo first)</option></select></label>
+      </div>
+      <label class="field"><span>Task</span><textarea id="sc-task" rows="3" placeholder="What each run should do"></textarea></label>
+      <div class="wf-field">
+        <label class="field"><span>Workflow <em>(optional)</em></span>
+          <select id="sc-workflow"><option value="">None — single task</option></select></label>
+        <div class="wf-steps" id="sc-wf-steps" hidden></div>
+      </div>
+      <div class="sc-trigger">
+        <div class="field"><span>Trigger</span>
+          <div class="seg">
+            <label class="check"><input type="radio" name="sc-kind" id="sc-kind-cron" value="cron" checked> Cron</label>
+            <label class="check"><input type="radio" name="sc-kind" id="sc-kind-change" value="on_change"> On change</label>
+          </div>
+        </div>
+        <label class="field" id="sc-cron-row"><span>Cron expression</span>
+          <input id="sc-cron" class="mono" autocomplete="off" spellcheck="false" placeholder="0 3 * * 1-5">
+          <small class="hint">UTC · e.g. <code>0 3 * * 1-5</code> = 03:00 on weekdays</small></label>
+        <div class="sc-change" id="sc-change-row" hidden>
+          <label class="field"><span>Watch ref</span><input id="sc-ref" class="mono" autocomplete="off" spellcheck="false" placeholder="main">
+            <small class="hint">Fires when this branch gets new commits</small></label>
+          <label class="field"><span>Poll every (s)</span><input id="sc-poll" type="number" min="10" step="10" placeholder="60"></label>
+        </div>
+      </div>
+      <div class="grid2 grid4">
+        <label class="field"><span>Agent</span><select id="sc-agent"><option value="claude">claude</option><option value="fake">fake</option></select></label>
+        <label class="field"><span>Budget (USD)</span><input id="sc-budget" type="number" min="0" step="0.5" value="5"></label>
+        <label class="field"><span>If still running</span><select id="sc-overlap"><option value="skip">skip this fire</option><option value="queue">queue another run</option></select></label>
+        <label class="field"><span>Missed fires</span><select id="sc-catchup"><option value="once">catch up once</option><option value="skip">skip</option></select></label>
+      </div>
+      <div class="err" id="sc-err"></div>
+      <div class="dialog-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="sc-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="sc-submit">Create schedule</button>
+      </div>
+    </form>
+    <div class="audit-body" id="sc-body"></div>
   </div>
 </dialog>
 
