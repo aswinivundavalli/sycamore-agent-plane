@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .fleet import FleetError
 from .service import ActionError, Service
 
 log = logging.getLogger("conductor.http")
@@ -36,6 +37,11 @@ ROUTES: list[tuple[str, re.Pattern, str]] = [
     ("GET", re.compile(r"^/api/policy$"), "policy"),
     ("GET", re.compile(r"^/api/audit$"), "audit"),
     ("GET", re.compile(r"^/api/workflows$"), "workflows"),
+    ("GET", re.compile(r"^/api/workers$"), "workers"),
+    ("POST", re.compile(r"^/api/workers/register$"), "w_register"),
+    ("POST", re.compile(r"^/api/workers/([\w-]+)/(heartbeat|lease)$"), "w_call"),
+    ("POST", re.compile(r"^/api/workers/([\w-]+)/runs/(\d+)/(started|events|finish|tests|"
+                        r"failed|lost)$"), "w_run"),
     ("GET", re.compile(r"^/api/schedules$"), "list_schedules"),
     ("POST", re.compile(r"^/api/schedules$"), "create_schedule"),
     ("POST", re.compile(r"^/api/schedules/(\d+)/(pause|resume|run_now|delete)$"),
@@ -81,6 +87,9 @@ def make_handler(svc: Service):
                 return self._static(url.path)
             if method == "POST" and not self._same_origin():
                 return self._json(403, {"error": "cross-origin request refused"})
+            if method == "POST" and url.path.startswith("/api/workers/") and \
+                    not self._worker_authorized():
+                return self._json(401, {"error": "worker token required"})
             for m, pat, name in ROUTES:
                 match = pat.match(url.path)
                 if m == method and match:
@@ -88,12 +97,17 @@ def make_handler(svc: Service):
                         status, obj = getattr(self, "h_" + name)(
                             *match.groups(), query=parse_qs(url.query))
                         return self._json(status, obj)
-                    except ActionError as e:
+                    except (ActionError, FleetError) as e:
                         return self._json(e.status, {"error": str(e), **e.data})
                     except Exception as e:  # noqa: BLE001
                         log.exception("handler %s failed", name)
                         return self._json(500, {"error": f"internal error: {e}"})
             self._json(404, {"error": "not found"})
+
+        def _worker_authorized(self) -> bool:
+            import hmac
+            got = self.headers.get("Authorization", "")
+            return hmac.compare_digest(got, f"Bearer {svc.worker_token}")
 
         def _same_origin(self) -> bool:
             # The API can merge code on this machine; refuse POSTs from other
@@ -152,6 +166,19 @@ def make_handler(svc: Service):
 
         def h_schedule_op(self, sid, op, query):
             return 200, svc.schedule_op(int(sid), op)
+
+        def h_workers(self, query):
+            return 200, svc.sup.fleet.workers()
+
+        def h_w_register(self, query):
+            return 200, svc.sup.fleet.register(self._body())
+
+        def h_w_call(self, wid, op, query):
+            fleet = svc.sup.fleet
+            return 200, (fleet.heartbeat if op == "heartbeat" else fleet.lease)(wid, self._body())
+
+        def h_w_run(self, wid, run_id, op, query):
+            return 200, getattr(svc.sup.fleet, op)(wid, int(run_id), self._body())
 
         def h_audit(self, query):
             run_id = query.get("run_id", [None])[0]

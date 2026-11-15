@@ -101,6 +101,18 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 CREATE INDEX IF NOT EXISTS audit_run ON audit(run_id, id);
 
+-- Remote workers: machines that lease runs and execute them.
+CREATE TABLE IF NOT EXISTS workers (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    capacity    INTEGER NOT NULL,
+    labels      TEXT,                     -- JSON list
+    running     INTEGER NOT NULL DEFAULT 0,
+    last_seen   REAL NOT NULL,
+    registered_at REAL NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'online'   -- online | lost
+);
+
 -- Scheduled and triggered runs. A fire is claimed with a compare-and-set on
 -- next_fire_at, so a restart (or two coordinators) can never fire it twice.
 CREATE TABLE IF NOT EXISTS schedules (
@@ -154,6 +166,7 @@ MIGRATIONS = [
     ("schedule_id", "INTEGER"),
     # workers (phase 3)
     ("worker_id", "TEXT"),
+    ("remote_worktree", "TEXT"),   # the worktree's path on its worker (for reading paths)
     ("lease_expires_at", "REAL"),
 ]
 POST_MIGRATION_SQL = """
@@ -443,6 +456,35 @@ class Store:
     def delete_schedule(self, sid: int) -> None:
         with self.conn() as c:
             c.execute("DELETE FROM schedules WHERE id=?", (sid,))
+
+    # -- workers -----------------------------------------------------------
+    def upsert_worker(self, wid: str, name: str, capacity: int, labels: list) -> None:
+        now = time.time()
+        with self.conn() as c:
+            c.execute("""INSERT INTO workers (id, name, capacity, labels, last_seen,
+                                              registered_at, state)
+                         VALUES (?,?,?,?,?,?,'online')
+                         ON CONFLICT(id) DO UPDATE SET name=excluded.name,
+                           capacity=excluded.capacity, labels=excluded.labels,
+                           last_seen=excluded.last_seen, state='online'""",
+                      (wid, name, capacity, json.dumps(labels), now, now))
+
+    def touch_worker(self, wid: str, running: int) -> bool:
+        with self.conn() as c:
+            return c.execute("UPDATE workers SET last_seen=?, running=?, state='online' "
+                             "WHERE id=?", (time.time(), running, wid)).rowcount == 1
+
+    def workers(self) -> list[dict]:
+        out = []
+        for r in self.conn().execute("SELECT * FROM workers ORDER BY name"):
+            d = dict(r)
+            d["labels"] = json.loads(d["labels"] or "[]")
+            out.append(d)
+        return out
+
+    def mark_worker_lost(self, wid: str) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE workers SET state='lost' WHERE id=?", (wid,))
 
     # -- audit -------------------------------------------------------------
     def audit(self, actor: str, action: str, run_id: int | None = None,

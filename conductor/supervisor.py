@@ -59,6 +59,8 @@ class Supervisor:
         # Set by the service: creates a run from a schedule (same validation
         # and policy as a run created by hand).
         self.create_run_cb = None
+        from .fleet import Fleet  # remote workers (coordinator side)
+        self.fleet = Fleet(self)
         self._test_procs: dict[int, subprocess.Popen] = {}  # run id -> running test cmd
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -103,6 +105,8 @@ class Supervisor:
         first tick simply runs them again.
         """
         for run in self.store.list([states.STARTING]):
+            if run.get("worker_id"):
+                continue  # the lease decides: a silent worker is expired, not guessed
             d = self.cfg.attempt_dir(run["id"], run["attempt"])
             info = _read_json(d / "runner.json")
             pid = run.get("runner_pid") or (info or {}).get("runner_pid")
@@ -115,6 +119,8 @@ class Supervisor:
                                       "Conductor stopped while launching the agent",
                                       activity="Interrupted during launch")
         for run in self.store.list([states.RUNNING]):
+            if run.get("worker_id"):
+                continue
             d = self.cfg.attempt_dir(run["id"], run["attempt"])
             if run.get("runner_pid") and _runner_alive(run["runner_pid"], d):
                 self.store.add_event(run["id"], "info",
@@ -125,11 +131,16 @@ class Supervisor:
     def tick(self) -> None:
         self._reap()
         for run in self.store.list(states.AGENT_ACTIVE):
+            if run.get("worker_id"):
+                continue  # a remote worker reports on it
             with self.lock(run["id"]):
                 run = self.store.get(run["id"])
                 if run["state"] in states.AGENT_ACTIVE:
                     self._monitor(run)
+        self.fleet.expire_leases()
         for run in self.store.list([states.TESTING]):
+            if run.get("worker_id"):
+                continue  # the worker runs the tests
             if run["id"] not in self._testing:
                 self._testing.add(run["id"])
                 threading.Thread(target=self._run_tests, args=(run["id"],),
@@ -160,7 +171,7 @@ class Supervisor:
 
     def _schedule(self) -> None:
         running = self.store.list(states.AGENT_ACTIVE)
-        active = len(running)
+        active = sum(1 for r in running if not r.get("worker_id"))  # local slots only
         per_repo: dict[str, int] = {}
         for r in running:
             per_repo[r["repo_path"]] = per_repo.get(r["repo_path"], 0) + 1
@@ -186,7 +197,8 @@ class Supervisor:
                     attempt=attempt, attempt_started_at=now, last_output_at=now,
                     stream_offset=0, stalled=0, exit_code=None, runner_pid=None,
                     attempt_cost_usd=0, error=None, activity="Preparing worktree",
-                    activity_at=now, started_at=run.get("started_at") or now):
+                    activity_at=now, started_at=run.get("started_at") or now,
+                    worker_id=None):  # a restarted remote run may come back local
                 return False
             try:
                 return self._launch_inner(self.store.get(run_id), attempt)
@@ -220,25 +232,12 @@ class Supervisor:
                                       "Re-running tests after merge", test_status="running",
                                       activity="Running tests")
                 return True
-            files = "\n".join(f"- {f}" for f in res["conflicts"])
-            prompt = (f"The branch you worked on has merge conflicts with "
-                      f"`{run['base_branch']}`, which changed since you started. I have "
-                      f"started the merge for you; these files contain conflict markers:\n"
-                      f"{files}\n\nResolve every conflict so that both your change and the "
-                      f"upstream change keep working, remove all markers, run the tests, "
-                      f"and summarise how you resolved each file.\n\n"
-                      f"Your original task was:\n{run['task']}")
+            prompt = conflict_prompt(run, res["conflicts"])
             self.store.add_event(run_id, "info",
                                  f"Merged {run['base_branch']} into the branch; conflicts in "
                                  f"{len(res['conflicts'])} file(s) handed to the agent")
 
-        # The budget is per run, not per attempt: each attempt gets what is left.
-        budget = run.get("budget_usd")
-        if budget:
-            budget = round(budget - (run.get("cost_usd") or 0), 2)
-            if budget < 0.05:
-                raise RuntimeError(f"Budget used up (${run['cost_usd']:.2f} of "
-                                   f"${run['budget_usd']:.2f}); raise it to continue")
+        budget = attempt_budget(run)
         resume = bool(run.get("resume") and run.get("session_id"))
         session_id = run["session_id"] if resume else str(uuid.uuid4())
         adapter = get_adapter(run["agent"])
@@ -325,12 +324,19 @@ class Supervisor:
         end = chunk.rfind(b"\n")
         if end < 0:
             return
-        chunk = chunk[:end + 1]
+        self.ingest_chunk(run, chunk[:end + 1])
+
+    def ingest_chunk(self, run: dict, chunk: bytes) -> None:
+        """Parse whole lines of an agent's stream that start at the run's
+        stored offset, record events, apply the live policy check, and move
+        the offset on - one transaction. The same path serves local runs (read
+        from the stream file) and remote workers (posted over HTTP)."""
         events, fields = [], {}
         cost_add = 0.0
         # Show paths relative to the worktree ("src/app.py", not the full path).
         # Only the parsed view changes; the transcript on disk stays verbatim.
-        wt_prefix = (run.get("worktree_path") or "\0").rstrip("/") + "/"
+        wt = run.get("worktree_path") or run.get("remote_worktree")
+        wt_prefix = (wt or "\0").rstrip("/") + "/"
         guard = self._guards.setdefault(run["id"], LiveGuard())
         policy = self.policy_for(run)
         new_violations, kill_reason = [], None
@@ -341,7 +347,7 @@ class Supervisor:
             except ValueError:
                 obj = None
             if isinstance(obj, dict):
-                for f in guard.inspect(obj, policy, run["agent"], run.get("worktree_path")):
+                for f in guard.inspect(obj, policy, run["agent"], wt):
                     new_violations.append(f.violation)
                     events.append(("error" if f.kill else "info",
                                    f"Policy: {f.violation['detail']}", f.violation))
@@ -372,9 +378,9 @@ class Supervisor:
             fields["error"] = f"Stopped by policy: {kill_reason}"
         self.store.ingest(run["id"], run["attempt"], run["stream_offset"] + len(chunk),
                           events, **fields)
-        if kill_reason and not run.get("error") and run.get("runner_pid"):
+        if kill_reason and not run.get("error"):
             self.store.audit("conductor", "policy_kill", run["id"], {"reason": kill_reason})
-            _kill_group(run["runner_pid"])
+            self.kill(run)
 
     def _finish_attempt(self, run: dict, exit_info: dict, d: Path) -> None:
         run_id = run["id"]
@@ -411,7 +417,7 @@ class Supervisor:
         elif result and result.get("is_error"):
             err = _describe_failure(result, run)
         elif result is None:
-            tail = _tail(d / "stderr.log", 600)
+            tail = exit_info.get("stderr_tail") or _tail(d / "stderr.log", 600)
             err = f"Agent exited with code {code} without a result" + (f": {tail}" if tail else "")
         else:
             err = f"Agent exited with code {code}"
@@ -580,18 +586,25 @@ class Supervisor:
     # ------------------------------------------------------- derived info
     def _update_diff_info(self, run: dict) -> None:
         wt, base = run.get("worktree_path"), run.get("base_commit")
-        if not wt or not base or not Path(wt).exists():
+        if not base:
             return
+        # A local run is read from its worktree; a remote run from the branch
+        # its worker pushed into the repository.
+        local = bool(wt) and Path(wt).exists()
+        if not local and not run.get("worker_id"):
+            return
+        cwd, ref = (wt, "HEAD") if local else (run["repo_path"], run["branch"])
         try:
-            base = gitops.review_base(wt, run["base_branch"], fallback=base)
-            ranges = gitops.changed_ranges(wt, base)
+            base = gitops.review_base(cwd, run["base_branch"], ref, fallback=base)
+            ranges = gitops.changed_ranges(cwd, base, None if local else ref)
+            files = gitops.diff_files(cwd, base, ref)
             # Pre-merge policy check on exactly what would be merged.
-            findings = pol.check_diff(self.policy_for(run), gitops.diff_files(wt, base),
-                                      run["base_branch"])
+            findings = pol.check_diff(self.policy_for(run), files, run["base_branch"])
             now = time.time()
             self.store.update(
-                run["id"], diff_stat=gitops.diff_stat(wt, base),
-                changed_files=gitops.changed_files(wt, base),
+                run["id"], diff_stat=gitops.diff_stat(cwd, base, ref),
+                changed_files=(gitops.changed_files(wt, base) if local
+                               else sorted(f["path"] for f in files)),
                 changed_ranges={"base": base, "files": ranges},
                 merge_check={**gitops.merge_check(run["repo_path"], run["base_branch"],
                                                   run["branch"]), "checked_at": now,
@@ -692,6 +705,14 @@ class Supervisor:
             shutil.rmtree(path, ignore_errors=True)
 
     def cleanup_run(self, run: dict, delete_branch: bool) -> None:
+        if run.get("worker_id"):
+            # The worktree lives on the worker; the branch was pushed here.
+            self.fleet.command(run["worker_id"], "cleanup", run["id"])
+            if delete_branch and gitops.is_repo(run["repo_path"]):
+                gitops_safe(gitops.run_git, run["repo_path"], "branch", "-D", run["branch"])
+            self.store.add_event(run["id"], "info", "Asked the worker to clean up" +
+                                 (" and deleted the branch" if delete_branch else ""))
+            return
         wt = run.get("worktree_path")
         if wt:
             self._remove_worktree(run["repo_path"], Path(wt),
@@ -704,6 +725,9 @@ class Supervisor:
 
     def kill(self, run: dict) -> None:
         """Stop whatever is running for this run: the agent and/or its tests."""
+        if run.get("worker_id"):
+            self.fleet.command(run["worker_id"], "kill", run["id"])
+            return
         test = self._test_procs.get(run["id"])
         if test and test.poll() is None:
             _kill_group(test.pid, grace=1.0)
@@ -714,6 +738,27 @@ class Supervisor:
 
 
 # ---------------------------------------------------------------- helpers
+def conflict_prompt(run: dict, conflicts: list[str]) -> str:
+    files = "\n".join(f"- {f}" for f in conflicts)
+    return (f"The branch you worked on has merge conflicts with `{run['base_branch']}`, "
+            f"which changed since you started. I have started the merge for you; these "
+            f"files contain conflict markers:\n{files}\n\nResolve every conflict so that "
+            f"both your change and the upstream change keep working, remove all markers, "
+            f"run the tests, and summarise how you resolved each file.\n\n"
+            f"Your original task was:\n{run['task']}")
+
+
+def attempt_budget(run: dict) -> float | None:
+    """The budget is per run, not per attempt: each attempt gets what is left."""
+    budget = run.get("budget_usd")
+    if budget:
+        budget = round(budget - (run.get("cost_usd") or 0), 2)
+        if budget < 0.05:
+            raise RuntimeError(f"Budget used up (${run['cost_usd']:.2f} of "
+                               f"${run['budget_usd']:.2f}); raise it to continue")
+    return budget
+
+
 def _current_step(run: dict):
     if not run.get("workflow_def"):
         return None

@@ -49,6 +49,7 @@ class Service:
     def __init__(self, cfg: Config, store: Store, sup: Supervisor):
         self.cfg, self.store, self.sup = cfg, store, sup
         sup.create_run_cb = self._run_from_schedule
+        self.worker_token = _worker_token(cfg)
 
     # ------------------------------------------------------------- reading
     def get(self, run_id: int) -> dict:
@@ -573,3 +574,23 @@ class Service:
 def _title_from_task(task: str) -> str:
     first = task.strip().splitlines()[0]
     return first if len(first) <= 72 else first[:69].rstrip() + "…"
+
+
+def _worker_token(cfg: Config) -> str:
+    """Shared secret workers present as a bearer token. CONDUCTOR_WORKER_TOKEN,
+    or one generated once and kept in CONDUCTOR_HOME/worker_token (0600)."""
+    tok = os.environ.get("CONDUCTOR_WORKER_TOKEN")
+    if tok:
+        return tok
+    path = cfg.home / "worker_token"
+    try:
+        return path.read_text().strip()
+    except FileNotFoundError:
+        import secrets
+        cfg.home.mkdir(parents=True, exist_ok=True)
+        tok = secrets.token_urlsafe(32)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(tok)
+        return tok
+

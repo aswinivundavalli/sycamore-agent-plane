@@ -325,7 +325,7 @@ WHOLE_FILE = [1, 1 << 31]
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
 
 
-def changed_ranges(worktree, base_commit) -> dict[str, list[list[int]]]:
+def changed_ranges(worktree, base_commit, ref=None) -> dict[str, list[list[int]]]:
     """Per changed file, the line ranges of ``base_commit`` that were touched.
 
     Ranges are in the *base* file's line numbers, so two runs cut from the
@@ -333,9 +333,13 @@ def changed_ranges(worktree, base_commit) -> dict[str, list[list[int]]]:
     will very likely report a conflict when the second one merges. Pure
     insertions are recorded at the line they follow. New, binary or
     untracked files count as changed throughout.
+
+    With ``ref`` (a branch or commit), the committed changes ``base..ref`` are
+    read instead of the working tree: used for runs on remote workers, whose
+    branch was pushed into the repository.
     """
     out = run_git(worktree, "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff",
-                  base_commit, "--")
+                  base_commit, *([ref] if ref else []), "--")
     ranges: dict[str, list[list[int]]] = {}
     current = None
     for line in out.splitlines():
@@ -352,7 +356,9 @@ def changed_ranges(worktree, base_commit) -> dict[str, list[list[int]]]:
             if m and ranges.get(current) != [WHOLE_FILE]:
                 start, count = int(m.group(1)), int(m.group(2) or "1")
                 ranges[current].append([start, start + max(count, 1) - 1])
-    for path in changed_files(worktree, base_commit):
+    paths = changed_files(worktree, base_commit) if ref is None else [
+        f["path"] for f in diff_files(worktree, base_commit, ref)]
+    for path in paths:
         if not ranges.get(path):  # untracked, binary or mode-only: whole file
             ranges[path] = [WHOLE_FILE]
     return ranges
