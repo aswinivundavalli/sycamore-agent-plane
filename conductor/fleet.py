@@ -75,6 +75,9 @@ class Fleet:
         self.store = sup.store
         self.cfg = sup.cfg
         self._commands: dict[str, list[dict]] = defaultdict(list)
+        # Time spent with the coordinator itself down must not count against
+        # a worker's lease: a restart gives every worker a fresh window.
+        self.started_at = time.time()
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------- registry
@@ -328,7 +331,8 @@ class Fleet:
         """Runs whose worker went silent past the lease become interrupted."""
         now = time.time()
         lost = {w["id"] for w in self.store.workers()
-                if w["state"] == "online" and now - w["last_seen"] > LEASE_SECS}
+                if w["state"] == "online"
+                and now - max(w["last_seen"], self.started_at) > LEASE_SECS}
         for wid in lost:
             self.store.mark_worker_lost(wid)
             log.warning("worker %s lost (silent for over %ss)", wid, LEASE_SECS)

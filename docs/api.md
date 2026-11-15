@@ -125,3 +125,22 @@ A workflow gate puts the run in `waiting_input` with a `question`; answering "ap
 | POST | `/api/schedules/<id>/<op>` | op = `pause` \| `resume` \| `run_now` \| `delete` | `Schedule` (or `{"deleted": id}`) |
 
 `Schedule`: `{id, name, repo_path, base_branch, task, workflow, agent, budget_usd, kind, cron, watch_ref, poll_secs, overlap, catch_up, enabled, next_fire_at, last_fired_at, last_run_id, last_seen_sha, last_note, created_at, updated_at}`. Cron expressions are UTC. Runs a schedule creates are grouped under `group_key = "schedule:<id>"`.
+
+## Remote workers (phase 3)
+
+Workers authenticate every POST with `Authorization: Bearer <token>`, where the token is `CONDUCTOR_WORKER_TOKEN` or the contents of `CONDUCTOR_HOME/worker_token` (created on first start, mode 0600). Every run call carries `attempt`. A call for an attempt that is no longer leased to that worker returns 409, so a worker that lost its lease can never overwrite newer state. See `conductor/fleet.py` for the full contract.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/workers` | | `{"workers":[{id, name, capacity, labels, running, last_seen, state: online\|lost}], "lease_secs"}` (no token needed: read-only, for the UI) |
+| POST | `/api/workers/register` | `{name, capacity, labels?, worker_id?}` | `{"worker_id", "lease_secs"}`. Sending a known `worker_id` re-registers the same worker after a restart. |
+| POST | `/api/workers/<wid>/heartbeat` | `{running:[run ids], ranges:{run_id:{base, files}}}` | `{"commands":[{"op":"kill"\|"cleanup","run_id"}]}` |
+| POST | `/api/workers/<wid>/lease` | `{free, running}` | `{"runs":[Spec…]}`: `run_id, attempt, title, task, repo_remote, base_branch, base_commit, branch, prompt, pre_attempt, resume, session_id, agent, model, budget_usd, disallowed_tools, max_runtime_secs` |
+| POST | `/api/workers/<wid>/runs/<id>/started` | `{attempt, session_id, resume, prompt, worktree}` or `{attempt, merged_clean: true}` | `{"state"}` (plus `test_cmd` when tests should run straight away) |
+| POST | `/api/workers/<wid>/runs/<id>/events` | `{attempt, offset, data}` | `{"offset"}`. `data` holds whole stream lines starting at byte `offset`. Bytes already stored are skipped; a gap returns 409 with the offset the coordinator has. |
+| POST | `/api/workers/<wid>/runs/<id>/finish` | `{attempt, code, stderr_tail}` (sent after the branch is pushed) | `{"state", "test_cmd"?}`: run the tests when `state` is `testing` |
+| POST | `/api/workers/<wid>/runs/<id>/tests` | `{attempt, status, output, test_cmd}` | `{"state"}` |
+| POST | `/api/workers/<wid>/runs/<id>/failed` | `{attempt, error}` | run → failed ("Could not start on …") |
+| POST | `/api/workers/<wid>/runs/<id>/lost` | `{attempt}` | run → interrupted (the worker restarted and the agent is gone) |
+
+The run object adds `worker_id` (null for runs on the coordinator itself) and `remote_worktree`. Workers fetch from, and push `conductor/run-<id>` to, the repository path. `CONDUCTOR_REPO_REMOTES` (JSON, path → git URL) points workers on other machines at a URL instead. A worker silent for `CONDUCTOR_LEASE_SECS` (30) is marked lost and its runs are interrupted; time the coordinator itself was down does not count against it.

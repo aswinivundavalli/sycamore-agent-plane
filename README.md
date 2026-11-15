@@ -83,6 +83,68 @@ Things to try while it runs:
 
 Merges go only to your local clone's `master`.
 
+## Running a fleet
+
+Conductor is built for a team starting hundreds or thousands of runs: by hand, in batches, from repeatable workflows, and on schedules, spread over many machines.
+
+### Attention at scale
+- **Look at these next:** the board opens with the three runs that most need you. Within a tier, the run that has waited longest comes first.
+- **Paging and search:** the board is paged and searchable. The attention score is stored and indexed, so the board stays fast at thousands of runs.
+- **Groups:** runs created together (a batch, a schedule) collapse into one group with tallies ("38 ready · 2 failing · 1 needs you"). Bulk actions: merge all ready, reject all failed, restart interrupted.
+- **Batches:** `POST /api/batches`, or the Batch toggle in New run, creates many runs at once, one per line.
+
+### Guardrails: a policy per repository
+A repository commits `.conductor/policy.toml`. Conductor-wide defaults live in `CONDUCTOR_HOME/policy.toml`. Each layer can only tighten the one before it.
+
+```toml
+[paths]      allowed = ["src/**", "tests/**"]   forbidden = [".github/**", "secrets/**"]
+[diff]       max_files = 20   max_lines = 600   forbid_test_deletion = true
+[commands]   forbidden = ["git push", "curl", "wget"]          # built-in: git push, git reset --hard, rm -rf /, sudo
+[limits]     max_budget_usd = 5   max_runtime_secs = 3600   max_parallel_per_repo = 20
+[merge]      protected_targets = ["main"]   require_approval_over_lines = 300
+[violation]  on_forbidden_command = "kill"   on_forbidden_path = "kill"   # or "flag"
+```
+
+It is enforced at four points:
+1. **At create:** the budget is checked against the cap.
+2. **At launch:** forbidden commands and paths become Claude Code's own deny rules, which it applies even with permission prompts skipped. This was verified with a real run.
+3. **Live:** every streamed tool call is checked. An executed violation stops the agent; a refused attempt is recorded.
+4. **Before merge:** the diff is checked. A blocked merge needs a written override reason, and the override goes to the audit log (`GET /api/audit`).
+
+Agents can never change `.conductor/`, the directory that holds their own policy.
+
+### Repeatable workflows
+A workflow is a named chain of steps, defined once in `.conductor/workflows/<name>.toml` and fired at any task. The built-ins are `feature` (implement → add tests → self-review with an approval gate → docs), `bugfix` and `dependency-bump`.
+
+Each step is the next attempt on the same run and branch. A step can require passing tests, stop on failure, or wait at an approval gate.
+
+### Scheduled and triggered runs
+- **Cron (UTC):** for example `0 3 * * 1-5`, which is 03:00 on weekdays.
+- **On change:** fires when a branch moves.
+- **Exactly once:** each fire is claimed with a compare-and-set, so it can't fire twice, even across restarts.
+- **After downtime:** catch up once, or skip.
+- **No pile-up:** a schedule skips a fire while its previous run is still active.
+- **Where to manage them:** the Schedules panel in the UI, or `/api/schedules`.
+
+### Workers on many machines
+The coordinator, `./conductor.sh`, keeps every decision. Workers on any machine lease runs, execute them in their own worktrees, stream output back, and push the run branch.
+
+To run a coordinator that executes nothing itself:
+
+```bash
+./conductor.sh --max-parallel 0
+```
+
+On each worker machine, start a worker pointed at the coordinator:
+
+```bash
+python3 -m conductor.worker --coordinator http://coordinator:7700 --token-file ~/.conductor/worker_token --capacity 16
+```
+
+Workers on other machines need git access to the repository. Map it with `CONDUCTOR_REPO_REMOTES='{"/srv/repos/app": "ssh://git@host/app.git"}'`. A worker that goes silent is marked lost and its runs are interrupted. A restarted worker re-attaches to its running agents. The protocol is in [docs/api.md](docs/api.md#remote-workers-phase-3).
+
+**Load test:** `python3 scripts/loadtest.py --runs 1000 --workers 4 --capacity 16` kills a worker and the coordinator mid-run, then checks that nothing started twice and no event was lost. Results are in [docs/scale-test.md](docs/scale-test.md).
+
 ## Architecture
 
 ```

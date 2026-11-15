@@ -635,10 +635,16 @@ class Supervisor:
 
     def _refresh_merge_checks(self) -> None:
         """The target branch moves when other runs merge; re-check finished runs."""
+        targets: dict[tuple[str, str], str | None] = {}  # one rev-parse per repo+branch
         for run in self.store.list([states.FINISHED, states.FAILED]):
-            try:
-                target = gitops.rev_parse(run["repo_path"], run["base_branch"])
-            except gitops.GitError:
+            key = (run["repo_path"], run["base_branch"])
+            if key not in targets:
+                try:
+                    targets[key] = gitops.rev_parse(*key)
+                except gitops.GitError:
+                    targets[key] = None
+            target = targets[key]
+            if target is None:
                 continue
             old = run.get("merge_check") or {}
             if old.get("target_commit") != target:

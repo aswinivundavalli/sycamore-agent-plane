@@ -2,43 +2,46 @@
 
 ## What I built
 
-All of Part 1: runs in isolated worktrees, a live status board, review (diff, the agent's summary, tests the conductor ran itself) with merge, keep-branch or reject. Agents survive the conductor being killed and are re-attached; dead ones are marked interrupted and resume their session on restart. Worktrees are cleaned up on every exit path, plus a janitor.
+**All of Part 1:**
+- runs in isolated worktrees and a live status board;
+- review: the diff, the agent's summary, and tests the conductor ran itself; then merge, keep the branch, or reject;
+- agents survive the conductor being killed and are re-attached; dead ones are marked interrupted and resume their session on restart;
+- worktrees are cleaned up on every exit path, plus a janitor.
 
-Extensions, chosen for an engineer with 4–6 agents who can't tell which ones need them:
+**The customer then grew:** a team lead whose engineers start hundreds to thousands of runs. The extensions follow that.
 
 | Extension | Why |
 |---|---|
-| **Attention ranking** | The core complaint. Board order: blocked > ready to merge > conflicts or failing tests > failed or interrupted > wedged > working. |
+| **Attention ranking** | The core complaint. Tiers run blocked > policy > ready > conflicts or failing > failed > wedged > working. Within a tier, the longest wait comes first. A "look at these next" strip and groups with bulk actions; the score is stored and indexed, so it pages at thousands. |
+| **Guardrails: repository policy** | Boundaries the team owns in `.conductor/policy.toml`, tighten-only across layers. Enforced at create, at launch (the agent's own deny rules), live (every tool call) and before merge (the diff). Overrides need a reason and are audited. Agents can't edit the policy itself. |
 | **Blocked on a question** | The question goes to the top with an answer box; the answer resumes the same session. |
-| **Conflict handling** | Same-file overlap is flagged *while runs are live*. Merge checks follow the moving target. One click hands conflicts back to the agent. Committed `<<<<<<<` markers block the merge. |
-| **Reaching me (browser)** | A notification fires only when a run *becomes* needs-you and the tab is unfocused. Nothing else notifies. |
-| **Budgets + watchdog** | A per-run cap enforced by `claude --max-budget-usd`. Stall flag and a hard timeout. |
+| **Conflict handling** | Overlap on the *same lines* is flagged while runs are live: in the field test, 1 pair flagged instead of 10. One click hands conflicts back to the agent; committed markers block the merge. |
+| **Repeatable workflows** | Define the five-step chain once and fire it at any task. The steps share one branch, with test requirements and approval gates. |
+| **Scheduled and triggered runs** | Cron in UTC, and on-change triggers. Each fire is a compare-and-set claim, so it never fires twice, even across restarts. |
+| **Placement across machines** | A coordinator plus workers over a lease protocol, with git as the only file transport. Proven at 1,000 runs with chaos: see [scale-test.md](scale-test.md). |
+| **Budgets, watchdog, reaching me** | A per-run cap; stall flag and timeout; a browser notification only when a run *becomes* needs-you. |
 
 ## Left out, and why
 
-- **Auto-merge.** First I'd want tests run on the *merge result*, protected paths and a size limit. "Tests pass on the branch" isn't enough to merge without a human.
-- **Phone push.** Needs an external service. It would hook into the same "becomes needs-you" transition.
-- **Handoff, multi-user, multiple machines.** These need auth and a shared server: a different architecture, not a feature.
-- **Workflows, fan-out, schedules.** Each adds a concept before the basic loop is trusted.
-- **Transcript search.** Every transcript is kept in `~/.conductor/runs/`, but there's no index.
+- **Auto-merge.** It needs tests on the *merged result* and a merge queue first. The policy (protected targets, size caps, approval) is the groundwork.
+- **Multi-user and handoff.** They need identity and run ownership. The audit log records actors, but there are no logins.
+- **Fan-out, phone push, transcript search.** Each is useful, but none is needed for the loop to be trusted.
 
 ## With two more days
 
-1. Tests on the merge result (temporary worktree), then re-test automatically when the target moves. This is the prerequisite for auto-merge.
+1. Tests on the merge result, then a merge queue and policy-gated auto-merge.
 2. Server-sent events instead of polling.
-3. Catch questions asked in prose without the `QUESTION:` marker (a classifier on the final message).
-4. Full-text search over transcripts (SQLite FTS).
+3. Detecting questions asked in prose, the gap seen in the field test.
+4. Full-text search over transcripts.
 
-## At 10× runs or 10 users
+## At 10× (10 engineers, 10,000 runs a day)
 
-- **One machine:** 40 agents need 40 worktrees' worth of CPU, RAM and disk. Move to a worker pool that speaks the same runner/stream-file protocol, with streams shipped to central storage.
-- **SQLite and a pid check:** move to Postgres with leases (a heartbeat column) instead of "the pid is alive on this box".
-- **Per-run merge buttons:** the target moves constantly and finished runs go stale. Use a merge queue (rebase, test, merge, one at a time).
-- **No auth:** it's localhost-only with an Origin check. Multiple users need identity, run ownership and an audit trail of merges.
-- **Disk:** use sparse checkouts or a shared object store, plus a quota that refuses new runs before the disk fills.
+- **The coordinator** is one process on SQLite. It held 64 concurrent runs and 580 runs a minute on 4 cores. Beyond that: Postgres, the same compare-and-set transitions, and several coordinators.
+- **Real agents are the bottleneck:** API rate, cost and *review capacity*. That is why attention ranking, groups and bulk actions matter more than raw throughput.
+- **Git:** many workers pushing to one repository need a real git server, which is what `CONDUCTOR_REPO_REMOTES` is for. Worktree disk is bounded by the janitor; quotas are not built.
 
 ## Known weak spots
 
-- Agents (permissions skipped) and test commands run unsandboxed: this assumes a trusted repo on your own machine.
-- Cancel kills the process group, but a `setsid`-daemonized child would escape.
-- Pid verification uses `/proc`. On macOS a reused pid after a reboot could fool it.
+- Agents and test commands run unsandboxed on workers. This is a trust model, not isolation.
+- Workers report what they ran. A compromised worker could lie; the policy's pre-merge diff check is the backstop.
+- Questions without the `QUESTION:` marker are shown as "finished".

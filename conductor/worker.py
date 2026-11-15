@@ -195,16 +195,30 @@ class Worker:
             log.info("recovering run %s (phase %s)", job.run_id, job.phase)
             job.start(recovering=True)
 
+    def lock_for(self, cache: Path | str) -> threading.Lock:
+        """One lock per cache clone. Every git operation that touches the
+        cache's shared object store or worktree list (fetch, worktree add and
+        remove, commit + push) holds it: concurrent jobs in one repository
+        otherwise race (a fetch can read a half-updated worktree HEAD)."""
+        with self.jobs_lock:
+            return self.cache_locks.setdefault(str(cache), threading.Lock())
+
     def cache_for(self, remote: str) -> Path:
+        """The cache clone for a remote, freshly fetched. Caller holds lock_for()."""
         key = hashlib.sha1(remote.encode()).hexdigest()[:16]
-        lock = self.cache_locks.setdefault(key, threading.Lock())
         path = self.workdir / "cache" / key
-        with lock:
-            if not (path / ".git").exists() and not (path / "HEAD").exists():
-                subprocess.run(["git", "clone", "--quiet", "--no-checkout", remote, str(path)],
-                               check=True, capture_output=True, timeout=600)
-            gitops.run_git(path, "fetch", "--quiet", "--prune", "origin",
-                           "+refs/heads/*:refs/remotes/origin/*", timeout=600)
+        if not (path / ".git").exists() and not (path / "HEAD").exists():
+            subprocess.run(["git", "clone", "--quiet", "--no-checkout", remote, str(path)],
+                           check=True, capture_output=True, timeout=600)
+        for attempt in (1, 2):
+            try:
+                gitops.run_git(path, "fetch", "--quiet", "--prune", "origin",
+                               "+refs/heads/*:refs/remotes/origin/*", timeout=600)
+                break
+            except gitops.GitError:
+                if attempt == 2:
+                    raise
+                time.sleep(1)
         return path
 
 
@@ -288,20 +302,24 @@ class Job(threading.Thread):
 
     def _prepare_and_launch(self) -> None:
         s = self.spec
-        cache = self.w.cache_for(s["repo_remote"])
-        self.cache = str(cache)
+        key = hashlib.sha1(s["repo_remote"].encode()).hexdigest()[:16]
         wt = self.w.workdir / "worktrees" / f"run-{self.run_id}"
-        if not (wt / ".git").exists():
-            gitops.run_git(cache, "worktree", "prune")
-            has_branch = gitops.run_git(cache, "rev-parse", "--verify", "--quiet",
-                                        f"refs/remotes/origin/{s['branch']}", check=False)
-            start = f"origin/{s['branch']}" if has_branch.strip() else s["base_commit"]
-            gitops.run_git(cache, "worktree", "add", "--quiet", "-B", s["branch"], str(wt), start)
+        with self.w.lock_for(self.w.workdir / "cache" / key):
+            cache = self.w.cache_for(s["repo_remote"])
+            self.cache = str(cache)
+            if not (wt / ".git").exists():
+                gitops.run_git(cache, "worktree", "prune")
+                has_branch = gitops.run_git(cache, "rev-parse", "--verify", "--quiet",
+                                            f"refs/remotes/origin/{s['branch']}", check=False)
+                start = f"origin/{s['branch']}" if has_branch.strip() else s["base_commit"]
+                gitops.run_git(cache, "worktree", "add", "--quiet", "-B", s["branch"], str(wt),
+                               start)
         self.worktree = str(wt)
         prompt = s["prompt"]
         started = {}
         if s.get("pre_attempt") == "merge_target":
-            res = gitops.merge_target_into_worktree(wt, f"origin/{s['base_branch']}")
+            with self.w.lock_for(self.cache):
+                res = gitops.merge_target_into_worktree(wt, f"origin/{s['base_branch']}")
             if res["clean"]:
                 self._push()
                 out = self.call("started", {"merged_clean": True})
@@ -384,8 +402,9 @@ class Job(threading.Thread):
         self.save()
 
     def _push(self) -> None:
-        gitops.run_git(self.worktree, "push", "--quiet", "--force", "origin",
-                       f"HEAD:refs/heads/{self.spec['branch']}", timeout=600)
+        with self.w.lock_for(self.cache):
+            gitops.run_git(self.worktree, "push", "--quiet", "--force", "origin",
+                           f"HEAD:refs/heads/{self.spec['branch']}", timeout=600)
 
     def _report_exit(self) -> None:
         exit_info = _read_json(self.attempt_dir / "exit.json") or {"code": None}
@@ -395,7 +414,8 @@ class Job(threading.Thread):
                    "(conflicts resolved by the agent)")
         else:
             msg = f"conductor: run {self.run_id}: {self.spec.get('title') or 'agent work'}"
-        gitops.commit_all(wt, msg)
+        with self.w.lock_for(self.cache):
+            gitops.commit_all(wt, msg)
         self._push()
         out = self.call("finish", {"code": exit_info.get("code"),
                                    "stderr_tail": _tail(self.attempt_dir / "stderr.log", 600)})
@@ -426,9 +446,10 @@ class Job(threading.Thread):
     def cleanup(self) -> None:
         self.kill()
         if self.worktree and self.cache:
-            gitops.run_git(self.cache, "worktree", "remove", "--force", self.worktree,
-                           check=False)
-            gitops.run_git(self.cache, "worktree", "prune", check=False)
+            with self.w.lock_for(self.cache):
+                gitops.run_git(self.cache, "worktree", "remove", "--force", self.worktree,
+                               check=False)
+                gitops.run_git(self.cache, "worktree", "prune", check=False)
         import shutil
         shutil.rmtree(self.w.workdir / "runs" / f"run-{self.run_id}", ignore_errors=True)
         (self.w.workdir / "jobs" / f"run-{self.run_id}.json").unlink(missing_ok=True)

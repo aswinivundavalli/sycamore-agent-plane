@@ -199,11 +199,16 @@ class Service:
                 "test_cmd_guess": gitops.detect_test_cmd(root)}
 
     # ------------------------------------------------------------- writing
-    def create_run(self, body: dict) -> dict:
+    def create_run(self, body: dict, ctx: dict | None = None) -> dict:
+        """``ctx`` lets a batch share the repository checks, policy and
+        workflow lookups across its runs instead of repeating them per run."""
+        ctx = {} if ctx is None else ctx
         task = (body.get("task") or "").strip()
         if not task:
             raise ActionError("task is required")
-        info = self.repo_info(body.get("repo_path") or "")
+        if "info" not in ctx:
+            ctx["info"] = self.repo_info(body.get("repo_path") or "")
+        info = ctx["info"]
         base_branch = (body.get("base_branch") or info["current_branch"] or "").strip()
         if not base_branch:
             raise ActionError("repo is on a detached HEAD; pick a base branch")
@@ -222,11 +227,13 @@ class Service:
         budget = float(budget) if budget not in (None, "") else self.cfg.default_budget_usd
         # Guardrails, enforcement point 1: the repository's policy decides
         # what this run may ask for before it is ever queued.
-        try:
-            policy, _sources, sha = pol.load(self.cfg.home, Path(info["root"]),
-                                             body.get("policy_limits") or None)
-        except pol.PolicyError as e:
-            raise ActionError(f"Policy error: {e}")
+        if "policy" not in ctx or body.get("policy_limits"):
+            try:
+                ctx["policy"] = pol.load(self.cfg.home, Path(info["root"]),
+                                         body.get("policy_limits") or None)
+            except pol.PolicyError as e:
+                raise ActionError(f"Policy error: {e}")
+        policy, _sources, sha = ctx["policy"]
         if body.get("budget_usd") not in (None, ""):
             errors = pol.check_create(policy, budget)
             if errors:
@@ -238,7 +245,9 @@ class Service:
         wf_fields = {}
         if body.get("workflow"):
             try:
-                found = wfl.load_all(self.cfg.home, Path(info["root"]))
+                if "workflows" not in ctx:
+                    ctx["workflows"] = wfl.load_all(self.cfg.home, Path(info["root"]))
+                found = ctx["workflows"]
             except wfl.WorkflowError as e:
                 raise ActionError(f"Workflow error: {e}")
             wf = found.get(body["workflow"])
@@ -249,7 +258,9 @@ class Service:
                          "next_prompt": wfl.render(wf, 0, task, None)}
         run = self.store.create_run(
             title=title, task=task, repo_path=info["root"], base_branch=base_branch,
-            base_commit=gitops.rev_parse(info["root"], base_branch),
+            base_commit=ctx.setdefault(("base", base_branch),
+                                       gitops.rev_parse(info["root"], base_branch)
+                                       if ("base", base_branch) not in ctx else None),
             agent=agent, model=(body.get("model") or None), test_cmd=test_cmd,
             budget_usd=budget or None, activity="Waiting for a free slot",
             activity_at=time.time(), policy=policy.to_dict(), policy_sha=sha,
@@ -519,8 +530,9 @@ class Service:
         key = body.get("group_key") or f"batch:{uuid.uuid4().hex[:10]}"
         title = (body.get("title") or "").strip() or f"Batch of {len(tasks)}"
         common = {k: v for k, v in body.items() if k not in ("tasks", "title", "group_key")}
+        ctx: dict = {}  # repository, policy and workflows resolved once for the batch
         ids = [self.create_run({**common, "task": t, "group_key": key,
-                                "group_title": title})["id"] for t in tasks]
+                                "group_title": title}, ctx)["id"] for t in tasks]
         return {"group_key": key, "title": title, "runs": ids}
 
     GROUP_OPS = {
