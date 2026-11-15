@@ -340,7 +340,7 @@ const ACTION_LABELS = {
   accept: (r) => "Merge into " + (r.base_branch || "base"),
   accept_branch: () => "Keep branch only",
   reject: () => "Reject & clean up",
-  restart: () => "Restart",
+  restart: (r) => (r.state === "finished" ? "Request changes…" : "Restart"),
   cancel: () => "Stop",
   resolve_conflicts: () => "Ask agent to resolve conflicts",
   retest: () => "Re-run tests",
@@ -449,6 +449,12 @@ async function doAction(name, btn) {
   let endpoint = name, body = {};
   if (name === "accept") body = { mode: "merge" };
   if (name === "accept_branch") { endpoint = "accept"; body = { mode: "branch" }; }
+  if (name === "restart" && run.state === "finished") {
+    // Feedback goes back to the same agent session, on the same branch.
+    const note = prompt("What should the agent change? It resumes its session on the same branch.");
+    if (!note || !note.trim()) return;
+    body = { note: note.trim() };
+  }
   const msg = $("#d-action-msg");
   msg.className = "action-msg"; msg.textContent = "Working…";
   $$("#d-actions button").forEach((b) => (b.disabled = true));

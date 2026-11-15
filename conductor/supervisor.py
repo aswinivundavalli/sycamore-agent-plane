@@ -133,6 +133,8 @@ class Supervisor:
             self._refresh_merge_checks()
         if now - self._last_janitor > 300:
             self.janitor()
+        elif now - self.stats_cache.get("computed_at", 0) > 30:
+            self._refresh_disk_stats()
 
     def _reap(self) -> None:
         for pid, p in list(self._children.items()):

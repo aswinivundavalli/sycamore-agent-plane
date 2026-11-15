@@ -175,9 +175,10 @@ class Service:
         agent = body.get("agent") or "claude"
         if agent not in ADAPTER_NAMES:
             raise ActionError(f"unknown agent {agent!r}; choose one of {ADAPTER_NAMES}")
+        # None/absent = auto-detect, "" = no tests, anything else = run that.
         test_cmd = body.get("test_cmd")
         if test_cmd is not None:
-            test_cmd = test_cmd.strip() or None
+            test_cmd = test_cmd.strip()
         if body.get("no_tests"):
             test_cmd = ""
         budget = body.get("budget_usd")
