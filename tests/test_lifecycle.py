@@ -52,6 +52,12 @@ class LifecycleTest(unittest.TestCase):
         self.svc = Service(self.cfg, self.store, self.sup)
 
     def tearDown(self):
+        # Stop/cancel clean up on a background thread; let it finish before
+        # the temp repo is deleted under it.
+        import threading
+        for t in threading.enumerate():
+            if t.name.startswith("cleanup-run-"):
+                t.join(timeout=15)
         out = subprocess.run(["pgrep", "-f", f"conductor.runner {self.cfg.home}"],
                              capture_output=True, text=True).stdout
         for pid in out.split():

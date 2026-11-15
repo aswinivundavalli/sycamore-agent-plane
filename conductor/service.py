@@ -348,7 +348,7 @@ class Service:
                 self.sup.cleanup_run(run, delete_branch)
             except Exception as e:  # noqa: BLE001 - janitor retries later
                 log.warning("cleanup of run %s failed (janitor will retry): %s", run["id"], e)
-        threading.Thread(target=go, daemon=True).start()
+        threading.Thread(target=go, name=f"cleanup-run-{run['id']}", daemon=True).start()
 
 
 def _title_from_task(task: str) -> str:
