@@ -316,6 +316,49 @@ function renderBoard() {
 
   renderTopbar(needs.length);
   document.title = needs.length ? "(" + needs.length + ") Conductor" : "Conductor";
+  notifyNewlyNeeding(needs);
+}
+
+/* ───────────────────────── reaching you ─────────────────────────
+   Only one thing interrupts you: a run that has just started needing you
+   (blocked on a question, ready to merge, failed...). Nothing else notifies. */
+
+const notified = new Map(); // run id -> attention reason we already told you about
+let notifyPrimed = false;   // don't fire for everything already waiting at page load
+
+function notifyNewlyNeeding(needs) {
+  const fresh = [];
+  const live = new Set();
+  for (const r of needs) {
+    live.add(r.id);
+    if (notified.get(r.id) !== r.attention_reason) {
+      notified.set(r.id, r.attention_reason);
+      fresh.push(r);
+    }
+  }
+  for (const id of [...notified.keys()]) if (!live.has(id)) notified.delete(id);
+  if (!notifyPrimed) { notifyPrimed = true; return; }
+  if (!fresh.length || !("Notification" in window) || Notification.permission !== "granted") return;
+  if (document.visibilityState === "visible" && document.hasFocus()) return; // you're already looking
+  for (const r of fresh.slice(0, 3)) {
+    const n = new Notification("#" + r.id + " " + r.title, {
+      body: r.attention_reason + (r.state === "waiting_input" && r.question ? "\n" + r.question : ""),
+      tag: "conductor-run-" + r.id,
+    });
+    n.onclick = () => { window.focus(); location.hash = "#run-" + r.id; n.close(); };
+  }
+}
+
+function setupNotifyButton() {
+  const btn = $("#notify-btn");
+  if (!("Notification" in window)) return;
+  const sync = () => {
+    btn.hidden = Notification.permission === "granted";
+    btn.disabled = Notification.permission === "denied";
+    if (btn.disabled) btn.title = "Notifications are blocked for this site in your browser settings";
+  };
+  btn.addEventListener("click", async () => { try { await Notification.requestPermission(); } finally { sync(); } });
+  sync();
 }
 
 function renderTopbar(needsN) {
@@ -983,6 +1026,7 @@ function wire() {
 
   // dialog
   $("#new-run-btn").addEventListener("click", openDialog);
+  setupNotifyButton();
   $("#f-cancel").addEventListener("click", closeDialog);
   $("#f-repo").addEventListener("blur", checkRepo);
   $("#f-repo").addEventListener("change", checkRepo);

@@ -34,6 +34,7 @@ FLAG_RE = re.compile(r"\[\[fake:(ask|fail|hang)\]\]")
 SLEEP_RE = re.compile(r"\[\[fake:sleep\s+([0-9.]+)\]\]")
 COST_RE = re.compile(r"\[\[fake:cost\s+([0-9.]+)\]\]")
 ANY_RE = re.compile(r"\[\[fake:(write|append)\s+[^\]]+?\]\].*?\[\[/fake\]\]|\[\[fake:[^\]]*\]\]", re.S)
+ASK_RE = re.compile(r"\[\[fake:ask:\s*([^\]]+)\]\]")  # [[fake:ask: custom question?]]
 QUESTION = "Which approach should I take, A or B?"
 
 
@@ -62,10 +63,14 @@ class Agent:
                 self.answer = prompt.strip()
                 self.resumed_with_state = True
         self.resume = resume
-        p = self.task_prompt
+        # The conductor's "resolve conflicts" prompt: resolve, don't redo the task.
+        self.resolve = "conflict markers" in prompt
+        p = "" if self.resolve else self.task_prompt
         self.files = [(m.group(1), m.group(2).strip(), m.group(3)) for m in FILE_RE.finditer(p)]
         flags = set(FLAG_RE.findall(p))
-        self.ask = "ask" in flags and not resume
+        m_ask = ASK_RE.search(p)
+        self.question = m_ask.group(1).strip() if m_ask else QUESTION
+        self.ask = ("ask" in flags or m_ask is not None) and not resume
         self.fail = "fail" in flags
         self.hang = "hang" in flags
         self.extra_sleep = sum(float(x) for x in SLEEP_RE.findall(p))
@@ -218,6 +223,9 @@ class Agent:
                 time.sleep(3600)
         self.pause()
 
+        if self.resolve:
+            return self.run_resolve()
+
         if self.resumed_with_state:
             self.text(f"Thanks. Going with: {self.answer[:200]}")
             self.pause()
@@ -230,7 +238,7 @@ class Agent:
         if self.ask:
             self._save_state()
             msg = ("I looked at the project and there are two reasonable ways to do this.\n\n"
-                   f"QUESTION: {QUESTION}")
+                   f"QUESTION: {self.question}")
             self.text(msg)
             self.result(msg)
             return 0
@@ -260,6 +268,31 @@ class Agent:
         self.text(summary)
         self.result(summary)
         self._clear_state()
+        return 0
+
+
+    def run_resolve(self) -> int:
+        """Resolve conflict markers by keeping both sides (fine for a demo)."""
+        import subprocess
+        self.text("Resolving the merge conflicts.")
+        found = subprocess.run(["git", "grep", "-l", "-E", "^<<<<<<< "], capture_output=True,
+                               text=True).stdout.split()
+        for rel in found:
+            p = Path(rel)
+            self.summary(f"Resolving conflicts in {rel}")
+            kept = [l for l in p.read_text().splitlines(keepends=True)
+                    if not re.match(r"^(<<<<<<<|=======|>>>>>>>)( |$)", l.rstrip("\n"))]
+            p.write_text("".join(kept))
+            self.tool("Edit", {"file_path": str(p.resolve()), "old_string": "<<<<<<< …",
+                               "new_string": "(both sides kept)"},
+                      f"The file {p.resolve()} has been updated.")
+            self.pause()
+        self.step_tests()
+        self.pause()
+        summary = ("Resolved conflicts in " + (", ".join(found) or "no files") +
+                   " by keeping both sides.\nTests: passed.")
+        self.text(summary)
+        self.result(summary)
         return 0
 
 

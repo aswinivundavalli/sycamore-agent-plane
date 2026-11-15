@@ -413,6 +413,22 @@ def _merge_tree(repo, target, branch) -> tuple[str, list[str]]:
     return tree, conflicts
 
 
+def review_base(cwd, target_branch, ref="HEAD", fallback=None) -> str:
+    """The commit a run's changes should be shown against.
+
+    Normally that is the commit the run started from. But once the target has
+    been merged *into* the run's branch (to resolve conflicts), diffing from
+    the original base would also show everything that landed on the target in
+    the meantime. The merge-base with the target is right in both cases.
+    """
+    base = run_git(cwd, "merge-base", target_branch, ref, check=False).strip()
+    if base:
+        return base
+    if fallback:
+        return fallback
+    raise GitError(f"no common ancestor between {target_branch} and {ref}")
+
+
 def merge_check(repo, target_branch, branch) -> dict:
     """Would merging ``branch`` into ``target_branch`` be clean? Touches no
     working tree or index."""

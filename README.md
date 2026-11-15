@@ -6,6 +6,18 @@ You give it a git repo and a task. It starts a headless agent (Claude Code) in i
 
 ![board](docs/screenshot-review.png)
 
+**Demo video (3½ min):** [docs/demo.mp4](docs/demo.mp4). It covers creating a run, parallel runs, answering a question, review and merge, a same-file conflict handed back to the agent, and `kill -9` of the conductor mid-run.
+
+## Scripted demo
+
+```bash
+node scripts/demo.js --interactive        # live demo: press Enter to advance each step
+node scripts/demo.js --record docs/demo.mp4 --pace 1.6   # re-record the video (headless)
+node scripts/demo.js --agent claude --interactive        # same flow with real Claude Code
+```
+
+The script makes a throwaway repo and conductor home under a temp dir, so it never touches your real `~/.conductor`. It needs Node and the `playwright` package; the conductor itself does not.
+
 ## Quick start
 
 Requirements: Python ≥ 3.10, git ≥ 2.38 (for `merge-tree --write-tree`), and the `claude` CLI on `PATH` for real runs. There are no pip dependencies.
@@ -29,7 +41,7 @@ scripts/make-demo-repo.sh /tmp/demo-repo
 | `[[fake:sleep 30]]` | take longer, which is useful for the kill/restart demo |
 | `[[fake:fail]]`, `[[fake:hang]]` | fail, or go silent (watchdog) |
 
-Run the tests (about 25 s, all real git and real processes):
+Run the tests (about 25 s, all real git and real processes; CI runs them on Python 3.10 and 3.12):
 
 ```bash
 python3 -m unittest discover -s tests
@@ -104,7 +116,7 @@ You can then:
 **Two runs editing the same file.**
 
 1. *While they run*, each card shows "also editing x.py: #3". This is computed from each worktree's changed files every few seconds.
-2. *After the first is merged*, the second's merge check is recomputed, because the target moved. It turns "conflicts with main", Merge is disabled, and **Ask agent to resolve conflicts** appears. That merges main into the run's branch, hands the conflicted files to the same agent session, then re-tests.
+2. *After the first is merged*, the second's merge check is recomputed, because the target moved. It turns "conflicts with main", Merge is disabled, and **Ask agent to resolve conflicts** appears. That merges main into the run's branch, hands the conflicted files to the same agent session, then re-tests. The review diff is taken from the merge-base with main, so it still shows only the run's own change.
 3. A merge is also refused if the branch still contains `<<<<<<<`/`>>>>>>>` markers. Git would happily merge those "cleanly"; this check caught a real case during development.
 
 The merge never runs in your working copy unless the target branch is checked out there and it is clean. Otherwise the merge commit is built with `git merge-tree` / `commit-tree` and the branch is moved with `update-ref` (compare-and-swap).
@@ -119,7 +131,9 @@ The merge never runs in your working copy unless the target branch is checked ou
 
 **Cleanup.** Accept, reject and cancel remove the worktree and the run's branch (unless you kept it). A janitor runs at startup and every 5 minutes. It deletes any worktree under `~/.conductor/worktrees` whose run is finished or unknown, and runs `git worktree prune` on every known repo. Disk use of the live worktrees is shown in the header. Transcripts (`stream.jsonl`) are kept as records; they are small.
 
-**Budgets and watchdog.** Each attempt gets `--max-budget-usd` (default $5). Cost is shown per run. A run with no output for `CONDUCTOR_STALL_SECS` is flagged "may be wedged" and ranked up. One past `CONDUCTOR_MAX_RUN_SECS` is killed and marked failed.
+**Reaching you.** Click **Notify me** once. After that, you get a desktop notification only when a run *newly* needs you (a question, ready to merge, failed) and the tab isn't focused. Nothing else notifies. Clicking the notification opens that run.
+
+**Budgets and watchdog.** The budget is per run (default $5). Each attempt gets what's left via `--max-budget-usd`, and a run that has spent it all won't start again. Cost is shown per run. A run with no output for `CONDUCTOR_STALL_SECS` is flagged "may be wedged" and ranked up. One past `CONDUCTOR_MAX_RUN_SECS` is killed and marked failed.
 
 ## Trade-offs
 

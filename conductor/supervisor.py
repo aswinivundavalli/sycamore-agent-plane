@@ -51,6 +51,7 @@ class Supervisor:
         self._locks_guard = threading.Lock()
         self._children: dict[int, subprocess.Popen] = {}  # runner pid -> Popen (to reap)
         self._testing: set[int] = set()
+        self._test_procs: dict[int, subprocess.Popen] = {}  # run id -> running test cmd
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_slow = 0.0
@@ -208,6 +209,13 @@ class Supervisor:
                                  f"Merged {run['base_branch']} into the branch; conflicts in "
                                  f"{len(res['conflicts'])} file(s) handed to the agent")
 
+        # The budget is per run, not per attempt: each attempt gets what is left.
+        budget = run.get("budget_usd")
+        if budget:
+            budget = round(budget - (run.get("cost_usd") or 0), 2)
+            if budget < 0.05:
+                raise RuntimeError(f"Budget used up (${run['cost_usd']:.2f} of "
+                                   f"${run['budget_usd']:.2f}); raise it to continue")
         resume = bool(run.get("resume") and run.get("session_id"))
         session_id = run["session_id"] if resume else str(uuid.uuid4())
         adapter = get_adapter(run["agent"])
@@ -215,7 +223,7 @@ class Supervisor:
         if not ok:
             raise RuntimeError(why)
         spec = adapter.build(prompt=prompt, session_id=session_id, resume=resume,
-                             model=run.get("model"), budget_usd=run.get("budget_usd"),
+                             model=run.get("model"), budget_usd=budget,
                              worktree=str(wt))
 
         d = self.cfg.attempt_dir(run_id, attempt)
@@ -233,6 +241,7 @@ class Supervisor:
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True)  # own process group: survives us, killable as a unit
         self._children[proc.pid] = proc
+        threading.Thread(target=self._refresh_disk_stats, daemon=True).start()
         self.store.transition(
             run_id, states.STARTING, states.RUNNING,
             f"Agent started ({run['agent']}{', resuming session' if resume else ''})",
@@ -374,7 +383,9 @@ class Supervisor:
                 status, output = "none", "No test command configured for this repository."
             else:
                 self.store.add_event(run_id, "test", f"Running tests: {cmd}")
-                status, output = _run_test_cmd(cmd, wt, self.cfg.test_timeout_secs)
+                status, output = _run_test_cmd(
+                    cmd, wt, self.cfg.test_timeout_secs,
+                    on_start=lambda p: self._test_procs.__setitem__(run_id, p))
                 # Tests may leave artifacts behind; the result is the committed state.
                 gitops_safe(gitops.run_git, wt, "checkout", "--", ".")
                 gitops_safe(gitops.run_git, wt, "clean", "-fdq")
@@ -394,6 +405,7 @@ class Supervisor:
                                   f"Test step errored: {e}")
         finally:
             self._testing.discard(run_id)
+            self._test_procs.pop(run_id, None)
 
     # ------------------------------------------------------- derived info
     def _update_diff_info(self, run: dict) -> None:
@@ -401,6 +413,7 @@ class Supervisor:
         if not wt or not base or not Path(wt).exists():
             return
         try:
+            base = gitops.review_base(wt, run["base_branch"], fallback=base)
             self.store.update(
                 run["id"], diff_stat=gitops.diff_stat(wt, base),
                 changed_files=gitops.changed_files(wt, base),
@@ -414,6 +427,7 @@ class Supervisor:
             wt, base = run.get("worktree_path"), run.get("base_commit")
             if wt and base and Path(wt).exists():
                 try:
+                    base = gitops.review_base(wt, run["base_branch"], fallback=base)
                     files = gitops.changed_files(wt, base)
                 except gitops.GitError:
                     continue
@@ -500,6 +514,10 @@ class Supervisor:
         threading.Thread(target=self._refresh_disk_stats, daemon=True).start()
 
     def kill(self, run: dict) -> None:
+        """Stop whatever is running for this run: the agent and/or its tests."""
+        test = self._test_procs.get(run["id"])
+        if test and test.poll() is None:
+            _kill_group(test.pid, grace=1.0)
         pid = run.get("runner_pid")
         d = self.cfg.attempt_dir(run["id"], run["attempt"])
         if pid and _runner_alive(pid, d):
@@ -565,19 +583,24 @@ def _kill_group(pid: int, grace: float = 3.0) -> None:
     threading.Thread(target=finish, daemon=True).start()
 
 
-def _run_test_cmd(cmd: str, cwd: str, timeout: int) -> tuple[str, str]:
+def _run_test_cmd(cmd: str, cwd: str, timeout: int, on_start=None) -> tuple[str, str]:
     # The test command is the user's own (or detected from their repo), run in
-    # their own worktree, so a shell is appropriate here.
+    # their own worktree, so a shell is appropriate here. It gets its own
+    # process group so a timeout or a cancel kills the whole test tree.
+    p = subprocess.Popen(cmd, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                         errors="replace", start_new_session=True)
+    if on_start:
+        on_start(p)
     try:
-        p = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True,
-                           timeout=timeout, stdin=subprocess.DEVNULL,
-                           start_new_session=True)
-        out = (p.stdout or "") + (p.stderr or "")
-        return ("passed" if p.returncode == 0 else "failed"), out
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) \
-            else (e.stdout or "")
-        return "failed", out + f"\n[conductor] tests timed out after {timeout}s"
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(p.pid, grace=1.0)
+        out, _ = p.communicate()
+        return "failed", (out or "") + f"\n[conductor] tests timed out after {timeout}s"
+    if p.returncode < 0:
+        return "failed", (out or "") + f"\n[conductor] tests killed (signal {-p.returncode})"
+    return ("passed" if p.returncode == 0 else "failed"), out or ""
 
 
 def _tail(path: Path, n: int) -> str:

@@ -7,6 +7,7 @@ or two browser tabs can never accept a run twice or start it twice.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -17,6 +18,8 @@ from .agents.registry import ADAPTER_NAMES
 from .config import Config
 from .db import Store
 from .supervisor import Supervisor
+
+log = logging.getLogger("conductor.service")
 
 
 class ActionError(Exception):
@@ -122,6 +125,7 @@ class Service:
                 text = gitops.run_git(cwd, "diff", "--no-color", "-M", f"{ref}^1", ref)
                 files = gitops.diff_files(cwd, f"{ref}^1", ref)
             else:
+                base = gitops.review_base(cwd, run["base_branch"], ref, fallback=base)
                 text = gitops.diff(cwd, base, ref)
                 files = gitops.diff_files(cwd, base, ref)
         except gitops.GitError as e:
@@ -328,7 +332,10 @@ class Service:
             while run.get("runner_pid") and _runner_alive(run["runner_pid"], d) \
                     and time.time() < deadline:
                 time.sleep(0.2)
-            self.sup.cleanup_run(run, delete_branch)
+            try:
+                self.sup.cleanup_run(run, delete_branch)
+            except Exception as e:  # noqa: BLE001 - janitor retries later
+                log.warning("cleanup of run %s failed (janitor will retry): %s", run["id"], e)
         threading.Thread(target=go, daemon=True).start()
 
 

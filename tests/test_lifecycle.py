@@ -141,7 +141,8 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(self.store.get(rid)["attempt"], 2)
 
     def test_same_file_conflict_is_caught_before_merge(self):
-        a = self.create("A [[fake:write shared.txt]]from A\n[[/fake]]")
+        a = self.create("A [[fake:write shared.txt]]from A\n[[/fake]]"
+                        "[[fake:write a_only.txt]]a\n[[/fake]]")
         b = self.create("B [[fake:write shared.txt]]from B\n[[/fake]]")
         self.wait_for(a, states.FINISHED)
         self.wait_for(b, states.FINISHED)
@@ -156,6 +157,20 @@ class LifecycleTest(unittest.TestCase):
             self.svc.accept(b, "merge")
         self.assertEqual(cm.exception.status, 409)
         self.assertEqual(self.git("show", "main:shared.txt").strip(), "from A")
+
+        # Hand the conflict back to the agent: main is merged into the branch,
+        # the agent resolves the markers, tests re-run, and it now merges.
+        self.svc.resolve_conflicts(b)
+        run = self.wait_for(b, states.FINISHED)
+        self.assertTrue(run["merge_check"]["clean"], run["merge_check"])
+        # The review shows only B's own change, not what it pulled in from main.
+        self.assertEqual([f["path"] for f in self.svc.diff(b)["files"]], ["shared.txt"])
+        self.assertEqual(run["diff_stat"]["files"], 1)
+        self.svc.accept(b, "merge")
+        merged = self.git("show", "main:shared.txt")
+        self.assertIn("from A", merged)
+        self.assertIn("from B", merged)
+        self.assertNotIn("<<<<<<<", merged)
 
     def test_overlap_warning_while_running(self):
         a = self.create("A [[fake:write same.txt]]a\n[[/fake]] [[fake:sleep 4]]")
@@ -246,6 +261,29 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("wedged", states.attention(run)[1])
         run = self.wait_for(rid, states.FAILED, timeout=15)
         self.assertIn("Timed out", run["error"])
+
+    def test_cancel_during_tests_kills_test_process(self):
+        marker = self.tmp / "tests-ran-to-completion"
+        rid = self.create("x [[fake:write x.txt]]x\n[[/fake]]",
+                          test_cmd=f"sleep 20 && touch {marker}")
+        self.wait_for(rid, states.TESTING)
+        deadline = time.time() + 5
+        while rid not in self.sup._test_procs and time.time() < deadline:
+            time.sleep(0.05)
+        proc = self.sup._test_procs[rid]
+        self.svc.cancel(rid)
+        proc.wait(timeout=5)  # raises if the test process survived
+        self.assertEqual(self.store.get(rid)["state"], states.CANCELLED)
+        self.assertFalse(marker.exists())
+
+    def test_budget_is_per_run_not_per_attempt(self):
+        rid = self.create("Spend [[fake:cost 1.0]] [[fake:fail]]", budget_usd=1.0)
+        self.wait_for(rid, states.FAILED)
+        self.assertAlmostEqual(self.store.get(rid)["cost_usd"], 1.0)
+        self.svc.restart(rid)
+        run = self.wait_for(rid, states.FAILED)
+        self.assertIn("Budget used up", run["error"])
+        self.assertIsNone(run["runner_pid"])  # never launched
 
     def test_skip_tests(self):
         rid = self.create("x [[fake:write x.txt]]x\n[[/fake]]", test_cmd="")
