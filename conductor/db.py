@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS runs (
     test_status     TEXT,               -- none | running | passed | failed
     test_output     TEXT,
     changed_files   TEXT,               -- JSON list
+    changed_ranges  TEXT,               -- JSON {base, files: {path: [[start, end]]}}
     diff_stat       TEXT,               -- JSON {files, additions, deletions}
     merge_check     TEXT,               -- JSON {clean, conflicts, checked_at, target_commit}
     error           TEXT,
@@ -78,7 +79,10 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_run ON events(run_id, id);
 """
 
-JSON_FIELDS = {"changed_files", "diff_stat", "merge_check"}
+JSON_FIELDS = {"changed_files", "changed_ranges", "diff_stat", "merge_check"}
+
+# Columns added after the first release: (name, SQL type). Added on open if missing.
+MIGRATIONS = [("changed_ranges", "TEXT")]
 
 
 class InvalidTransition(Exception):
@@ -90,6 +94,10 @@ class Store:
         self.path = Path(path)
         self._local = threading.local()
         self.conn().executescript(SCHEMA)  # executescript manages its own transaction
+        have = {r["name"] for r in self.conn().execute("PRAGMA table_info(runs)")}
+        for name, sqltype in MIGRATIONS:
+            if name not in have:
+                self.conn().execute(f"ALTER TABLE runs ADD COLUMN {name} {sqltype}")
 
     # -- connections -------------------------------------------------------
     def conn(self) -> sqlite3.Connection:

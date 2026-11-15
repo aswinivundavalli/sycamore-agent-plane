@@ -171,6 +171,9 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("from A", merged)
         self.assertIn("from B", merged)
         self.assertNotIn("<<<<<<<", merged)
+        # The merge the agent finished is labelled as such, not as the task.
+        self.assertIn("(conflicts resolved by the agent)",
+                      self.git("log", "--format=%s", "-8", "main"))
 
     def test_overlap_warning_while_running(self):
         a = self.create("A [[fake:write same.txt]]a\n[[/fake]] [[fake:sleep 4]]")
@@ -185,6 +188,41 @@ class LifecycleTest(unittest.TestCase):
             time.sleep(0.1)
         self.assertEqual(runs[a]["overlaps"][0]["run_id"], b)
         self.assertEqual(runs[b]["overlaps"][0]["files"], ["same.txt"])
+
+    def test_same_file_different_regions_is_not_an_overlap(self):
+        core = (self.repo / "textkit" / "core.py").read_text()
+        top = core.replace('"""Core text helpers."""', '"""Core text helpers (A)."""')
+        bottom = core.replace("return text[:width]", "return text[:width]  # (B)")
+        self.assertNotEqual(top, core)
+        self.assertNotEqual(bottom, core)
+        a = self.create(f"A [[fake:write textkit/core.py]]{top}[[/fake]] [[fake:sleep 4]]")
+        b = self.create(f"B [[fake:write textkit/core.py]]{bottom}[[/fake]] [[fake:sleep 4]]")
+        c = self.create(f"C [[fake:write textkit/core.py]]{top}[[/fake]] [[fake:sleep 4]]")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            self.sup._last_slow = 0
+            self.sup.tick()
+            runs = {r["id"]: r for r in self.svc.list_view()["runs"]}
+            if all(runs[i].get("changed_ranges") for i in (a, b, c)) and runs[a]["overlaps"]:
+                break
+            time.sleep(0.1)
+        overlapping = {o["run_id"] for o in runs[a]["overlaps"]}
+        self.assertIn(c, overlapping)      # same lines: flagged
+        self.assertNotIn(b, overlapping)   # same file, far apart: not flagged
+        self.assertEqual(runs[b]["overlaps"], [])
+
+    def test_old_database_is_migrated(self):
+        import sqlite3
+        path = self.tmp / "old.db"
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, "
+                    "task TEXT NOT NULL, repo_path TEXT NOT NULL, base_branch TEXT NOT NULL, "
+                    "state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+        con.commit()
+        con.close()
+        Store(path)
+        cols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(runs)")}
+        self.assertIn("changed_ranges", cols)
 
     def test_agent_survives_conductor_restart(self):
         rid = self.create("Slow [[fake:sleep 2]]")

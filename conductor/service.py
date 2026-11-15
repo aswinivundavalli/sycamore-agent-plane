@@ -63,14 +63,20 @@ class Service:
         return v
 
     def _overlaps(self, run: dict, others: list[dict]) -> list[dict]:
-        """Other live runs on the same repo touching the same files.
+        """Other live runs on the same repo editing the same lines.
 
         This is the early warning for "two agents keep editing the same file":
         visible while both are still running, not discovered at merge time.
+        File-level matching is too noisy to be useful on codebases built
+        around a few large modules (every run touches them), so when both
+        runs' changes are measured against the same base commit, only
+        overlapping or adjacent line ranges count. Otherwise it falls back
+        to "same file".
         """
         mine = set(run.get("changed_files") or [])
         if not mine or run["state"] in states.TERMINAL:
             return []
+        my_ranges = run.get("changed_ranges") or {}
         out = []
         for o in others:
             if o["id"] == run["id"] or o["state"] in states.TERMINAL:
@@ -78,6 +84,12 @@ class Service:
             if o["repo_path"] != run["repo_path"]:
                 continue
             common = mine & set(o.get("changed_files") or [])
+            their_ranges = o.get("changed_ranges") or {}
+            if common and my_ranges.get("base") and \
+                    my_ranges.get("base") == their_ranges.get("base"):
+                mf, tf = my_ranges.get("files") or {}, their_ranges.get("files") or {}
+                common = {f for f in common if f not in mf or f not in tf
+                          or gitops.ranges_overlap(mf[f], tf[f])}
             if common:
                 out.append({"run_id": o["id"], "title": o["title"], "state": o["state"],
                             "files": sorted(common)})

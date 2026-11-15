@@ -444,3 +444,52 @@ class MiscTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChangedRangesTest(GitTestCase):
+    """Line-range overlap is what keeps the "also editing" warning useful on
+    codebases built around a few big modules (the more-itertools field test:
+    file-level matching flagged 10 of 10 run pairs; ranges flagged only the
+    one pair that really conflicted)."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.repo / "big.txt", "".join(f"line {i}\n" for i in range(1, 101)))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "big file")
+        self.base = gitops.rev_parse(self.repo, "main")
+
+    def edit(self, name, edits):
+        path, _ = self.make_wt(name, f"conductor/{name}")
+        lines = (path / "big.txt").read_text().splitlines(keepends=True)
+        for idx, text in edits:
+            lines[idx - 1] = text
+        (path / "big.txt").write_text("".join(lines))
+        write(path / f"new-{name}.txt", "x\n")
+        return gitops.changed_ranges(path, self.base)
+
+    def test_ranges_and_overlap(self):
+        a = self.edit("run-a", [(10, "A\n"), (11, "A\n")])
+        b = self.edit("run-b", [(80, "B\n")])
+        c = self.edit("run-c", [(12, "C\n")])  # adjacent to run-a's edit
+        self.assertEqual(a["big.txt"], [[10, 11]])
+        self.assertEqual(b["big.txt"], [[80, 80]])
+        self.assertEqual(a["new-run-a.txt"], [gitops.WHOLE_FILE])  # untracked = whole file
+        self.assertFalse(gitops.ranges_overlap(a["big.txt"], b["big.txt"]))
+        self.assertTrue(gitops.ranges_overlap(a["big.txt"], c["big.txt"]))
+
+    def test_pure_insertions_at_the_same_point_overlap(self):
+        a_path, _ = self.make_wt("run-a", "conductor/run-a")
+        b_path, _ = self.make_wt("run-b", "conductor/run-b")
+        for p, text in ((a_path, "from a\n"), (b_path, "from b\n")):
+            lines = (p / "big.txt").read_text().splitlines(keepends=True)
+            lines.insert(12, text)
+            (p / "big.txt").write_text("".join(lines))
+        ra = gitops.changed_ranges(a_path, self.base)["big.txt"]
+        rb = gitops.changed_ranges(b_path, self.base)["big.txt"]
+        self.assertTrue(gitops.ranges_overlap(ra, rb))
+        # ...and git agrees: the second merge conflicts.
+        gitops.commit_all(a_path, "a")
+        gitops.commit_all(b_path, "b")
+        gitops.merge(self.repo, "main", "conductor/run-a", "merge a")
+        self.assertFalse(gitops.merge_check(self.repo, "main", "conductor/run-b")["clean"])

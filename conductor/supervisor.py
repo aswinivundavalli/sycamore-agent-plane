@@ -342,8 +342,12 @@ class Supervisor:
                                       activity="Waiting for your answer", activity_at=now)
                 self.store.add_event(run_id, "question", question)
                 return
-            gitops_safe(gitops.commit_all, run["worktree_path"],
-                        f"conductor: run {run_id}: {run['title']}")
+            msg = f"conductor: run {run_id}: {run['title']}"
+            if run.get("worktree_path") and gitops_safe(gitops.merge_in_progress,
+                                                        run["worktree_path"]):
+                msg = (f"conductor: run {run_id}: merge {run['base_branch']} "
+                       f"(conflicts resolved by the agent)")
+            gitops_safe(gitops.commit_all, run["worktree_path"], msg)
             self.store.transition(run_id, states.RUNNING, states.TESTING,
                                   "Agent finished; running tests", test_status="running",
                                   activity="Running tests", activity_at=now)
@@ -417,6 +421,7 @@ class Supervisor:
             self.store.update(
                 run["id"], diff_stat=gitops.diff_stat(wt, base),
                 changed_files=gitops.changed_files(wt, base),
+                changed_ranges={"base": base, "files": gitops.changed_ranges(wt, base)},
                 merge_check={**gitops.merge_check(run["repo_path"], run["base_branch"],
                                                   run["branch"]), "checked_at": time.time()})
         except gitops.GitError as e:
@@ -429,10 +434,12 @@ class Supervisor:
                 try:
                     base = gitops.review_base(wt, run["base_branch"], fallback=base)
                     files = gitops.changed_files(wt, base)
+                    ranges = {"base": base, "files": gitops.changed_ranges(wt, base)}
                 except gitops.GitError:
                     continue
-                if files != (run.get("changed_files") or []):
-                    self.store.update(run["id"], changed_files=files)
+                if files != (run.get("changed_files") or []) or \
+                        ranges != run.get("changed_ranges"):
+                    self.store.update(run["id"], changed_files=files, changed_ranges=ranges)
 
     def _refresh_merge_checks(self) -> None:
         """The target branch moves when other runs merge; re-check finished runs."""

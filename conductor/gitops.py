@@ -321,6 +321,54 @@ def changed_files(worktree, base_commit) -> list[str]:
     return sorted(set(_split_z(tracked)) | set(_split_z(untracked)))
 
 
+WHOLE_FILE = [1, 1 << 31]
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
+
+
+def changed_ranges(worktree, base_commit) -> dict[str, list[list[int]]]:
+    """Per changed file, the line ranges of ``base_commit`` that were touched.
+
+    Ranges are in the *base* file's line numbers, so two runs cut from the
+    same base can be compared: if their ranges in a file meet or touch, git
+    will very likely report a conflict when the second one merges. Pure
+    insertions are recorded at the line they follow. New, binary or
+    untracked files count as changed throughout.
+    """
+    out = run_git(worktree, "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff",
+                  base_commit, "--")
+    ranges: dict[str, list[list[int]]] = {}
+    current = None
+    for line in out.splitlines():
+        if line.startswith("--- "):
+            current = line[6:] if line.startswith("--- a/") else None
+        elif line.startswith("+++ "):
+            if current is None and line.startswith("+++ b/"):
+                current = line[6:]
+                ranges[current] = [WHOLE_FILE]  # a new file
+            elif current is not None:
+                ranges.setdefault(current, [])
+        elif current is not None and line.startswith("@@"):
+            m = _HUNK_RE.match(line)
+            if m and ranges.get(current) != [WHOLE_FILE]:
+                start, count = int(m.group(1)), int(m.group(2) or "1")
+                ranges[current].append([start, start + max(count, 1) - 1])
+    for path in changed_files(worktree, base_commit):
+        if not ranges.get(path):  # untracked, binary or mode-only: whole file
+            ranges[path] = [WHOLE_FILE]
+    return ranges
+
+
+def ranges_overlap(a: list[list[int]], b: list[list[int]]) -> bool:
+    """True if any range in ``a`` meets or is adjacent to any range in ``b``
+    (git treats changes to adjacent lines as conflicting)."""
+    return any(s1 <= e2 + 1 and s2 <= e1 + 1 for s1, e1 in a for s2, e2 in b)
+
+
+def merge_in_progress(worktree) -> bool:
+    """True while a merge is started but not yet committed in ``worktree``."""
+    return _merge_in_progress(worktree)
+
+
 def _range_args(base_commit, ref) -> list[str]:
     return ["--no-color", "--no-ext-diff", "-M", base_commit, ref, "--"]
 
