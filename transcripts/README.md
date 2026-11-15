@@ -29,3 +29,22 @@ Raw Claude Code transcripts (JSONL, as the tool saves them).
 - Disk usage in the header only refreshed at startup — caught in a screenshot.
 - After an agent resolved conflicts, the review diff still used the original base commit, so it also showed everything main had gained since. This was caught by watching frames of the recorded demo (3 files shown for a 1-file change). Fixed: the diff is taken from the merge-base with the target (`gitops.review_base`), and a regression assertion was added to the conflict test.
 - Cancelling a run while its tests ran left the test process alive, and the budget was per attempt rather than per run. Both were found reviewing the code against the brief's "budgets" ask. Fixed, with a test for each.
+
+## Fleet-scale round (policy, workflows, schedules, workers)
+
+Same method: contracts first (schema, `docs/api.md` sections, interfaces), then agents in parallel on separate files while I wrote the integration:
+- `agent-aa1c2f24371ff515b`: `conductor/policy.py` + 52 tests (layered, tighten-only policy, command and path matching).
+- `agent-aae6e20ea2a07c089`: `conductor/cron.py` + `conductor/workflows.py` + built-in workflows + 97 tests.
+- `agent-aac818f9110648e57`: the fleet UI (next-3, groups, policy panel, override, audit, batches), then the workflow and schedules UI after a follow-up message, verified against the real backend.
+
+I wrote and integrated the supervisor, service, `guard.py`, `fleet.py`, `worker.py` and the load test myself.
+
+What verification caught, beyond the unit tests:
+- **A real Claude run** showed deny rules hold with prompts skipped, but that a refused call still appears in the stream. So the live guard judges a call by its result, not its request.
+- **Screenshots against the real backend** showed policy reasons rendering green, and pre-merge findings missing their chip.
+- **The worker tests** caught the coordinator reading remote paths against a missing worktree.
+- **The load test** caught:
+  - a git race in the worker cache;
+  - 42 s to submit a batch;
+  - coordinator downtime counting against worker leases.
+- **The real-agent fleet run** showed that remote transcripts were deleted with the worker's clean-up, and that shell redirects escape every policy check.
