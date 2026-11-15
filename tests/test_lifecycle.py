@@ -26,7 +26,8 @@ from conductor.supervisor import Supervisor, _runner_alive
 ROOT = Path(__file__).resolve().parent.parent
 
 
-class LifecycleTest(unittest.TestCase):
+class LifecycleHarness(unittest.TestCase):
+    """Shared setup: temp demo repo, conductor home, fake agent, ticks."""
     def setUp(self):
         # Tests drop Store/Popen objects on purpose to simulate a crash.
         warnings.simplefilter("ignore", ResourceWarning)
@@ -91,6 +92,8 @@ class LifecycleTest(unittest.TestCase):
     def git(self, *args):
         return gitops.run_git(self.repo, *args)
 
+
+class LifecycleTest(LifecycleHarness):
     # -------------------------------------------------------------- tests
     def test_happy_path_merge_and_cleanup(self):
         rid = self.create("Add module [[fake:write textkit/extra.py]]X = 1\n[[/fake]]")

@@ -34,6 +34,7 @@ FLAG_RE = re.compile(r"\[\[fake:(ask|fail|hang)\]\]")
 SLEEP_RE = re.compile(r"\[\[fake:sleep\s+([0-9.]+)\]\]")
 COST_RE = re.compile(r"\[\[fake:cost\s+([0-9.]+)\]\]")
 ANY_RE = re.compile(r"\[\[fake:(write|append)\s+[^\]]+?\]\].*?\[\[/fake\]\]|\[\[fake:[^\]]*\]\]", re.S)
+BASH_RE = re.compile(r"\[\[fake:bash ([^\]]+)\]\]")  # [[fake:bash git push origin main]]
 ASK_RE = re.compile(r"\[\[fake:ask:\s*([^\]]+)\]\]")  # [[fake:ask: custom question?]]
 QUESTION = "Which approach should I take, A or B?"
 
@@ -74,6 +75,7 @@ class Agent:
         self.fail = "fail" in flags
         self.hang = "hang" in flags
         self.extra_sleep = sum(float(x) for x in SLEEP_RE.findall(p))
+        self.bash = [c.strip() for c in BASH_RE.findall(p)]
         m = COST_RE.search(p)
         self.cost = float(m.group(1)) if m else 0.0
         self.task = " ".join(ANY_RE.sub(" ", p).split()) or "(no task)"
@@ -252,6 +254,10 @@ class Agent:
                         subtype="error_during_execution", is_error=True)
             return 1
 
+        for cmd in self.bash:  # emitted as if run; the fake agent enforces no policy
+            self.summary(f"Running {cmd}")
+            self.tool("Bash", {"command": cmd}, f"(fake) ran: {cmd}")
+            self.pause()
         self.middle_sleep()
         touched = self.step_files()
         self.pause()

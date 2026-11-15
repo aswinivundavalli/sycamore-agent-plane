@@ -1,0 +1,35 @@
+# Built-in workflow: update one dependency, keep the build green, note it.
+name = "dependency-bump"
+description = "Update a dependency, keep the build and tests green, note it in the changelog"
+
+[[steps]]
+id = "bump"
+tests = "required"
+prompt = '''
+Dependency update:
+{task}
+
+You are working unattended in this repository's git worktree. Update the
+named dependency to the requested version (or, if no version is named, to
+the latest stable release compatible with the project). Change the manifest
+and regenerate the lockfile with the project's own package manager rather
+than editing lockfiles by hand. Update only this dependency and whatever must
+change with it; do not bump unrelated packages.
+
+Read the dependency's release notes or changelog for the versions between
+the old and the new one, and adapt the code to breaking changes and
+deprecations that affect this project. Build the project and run the full
+test suite; make sure both pass. Summarize the old and new version, the
+notable upstream changes, and every code change you had to make.
+'''
+
+[[steps]]
+id = "changelog"
+tests = "optional"
+prompt = '''
+If the project keeps a CHANGELOG or release notes, add a concise entry for
+this dependency update under the unreleased section, in the existing format
+(old version, new version, and any user-visible effect). If the project has
+no changelog, make no change. Do not change code in this step. Summarize what
+you recorded.
+'''

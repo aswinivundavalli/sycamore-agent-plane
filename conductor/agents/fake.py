@@ -17,7 +17,7 @@ class FakeAdapter(Adapter):
 
     def build(self, *, prompt: str, session_id: str, resume: bool,
               model: str | None, budget_usd: float | None,
-              worktree: str) -> LaunchSpec:
+              worktree: str, disallowed_tools: list[str] | None = None) -> LaunchSpec:
         argv = [sys.executable, "-m", "conductor.agents.fake_agent",
                 "--session-id", session_id, "--prompt", prompt]
         if resume:

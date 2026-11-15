@@ -20,7 +20,7 @@ The script makes a throwaway repo and conductor home under a temp dir, so it nev
 
 ## Quick start
 
-Requirements: Python ≥ 3.10, git ≥ 2.38 (for `merge-tree --write-tree`), and the `claude` CLI on `PATH` for real runs. There are no pip dependencies.
+Requirements: Python ≥ 3.11, git ≥ 2.38 (for `merge-tree --write-tree`), and the `claude` CLI on `PATH` for real runs. There are no pip dependencies.
 
 ```bash
 ./conductor.sh
@@ -41,7 +41,7 @@ scripts/make-demo-repo.sh /tmp/demo-repo
 | `[[fake:sleep 30]]` | take longer, which is useful for the kill/restart demo |
 | `[[fake:fail]]`, `[[fake:hang]]` | fail, or go silent (watchdog) |
 
-Run the tests (about 25 s, all real git and real processes; CI runs them on Python 3.10 and 3.12):
+Run the tests (about 25 s, all real git and real processes; CI runs them on Python 3.11 and 3.12):
 
 ```bash
 python3 -m unittest discover -s tests

@@ -21,6 +21,10 @@ from .supervisor import Supervisor
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < (3, 11):
+        print("Conductor needs Python 3.11 or newer (it reads policy files with tomllib); "
+              f"this is {sys.version.split()[0]}.", file=sys.stderr)
+        return 2
     cfg = Config()
     ap = argparse.ArgumentParser(prog="conductor", description=__doc__.splitlines()[0])
     ap.add_argument("--host", default=cfg.host)

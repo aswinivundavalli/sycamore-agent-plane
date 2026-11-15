@@ -76,3 +76,37 @@ Served by `conductor/server.py`; the UI in `conductor/static/` is the only clien
  "kind": "state|activity|tool|text|question|answer|result|test|error|info",
  "message": "human readable", "data": {}}
 ```
+
+## Fleet scale (phase 1): attention, groups, policy
+
+### Run object: new fields
+```jsonc
+{
+  "attention_score": 95,            // stored; >= 60 means "needs you"
+  "attention_reason": "Policy violation: touches .github/workflows/ci.yml",
+  "attention_since": 1731690000.1,  // when it entered this tier; older = more urgent
+  "group_key": "batch:7f3a…",       // runs created together, or "schedule:3"
+  "group_title": "Dependency bumps",
+  "policy": {...},                  // effective policy (see GET /api/policy)
+  "policy_sha": "a1b2c3d4e5f6",
+  "violations": [                   // live + pre-merge findings
+    {"rule": "forbidden_path", "detail": "edits .github/workflows/ci.yml", "action": "block", "at": 1731690000}
+  ],                                // action: kill (agent was stopped) | block (merge blocked) |
+                                    //         approval (needs an override reason) | flag (informational)
+  "merge_check": {..., "policy": [/* same shape as violations, from the diff */]},
+  "actions": [..., "accept_override"]   // when policy blocks a plain accept
+}
+```
+
+### Endpoints
+| Method | Path | Body / query | Returns |
+|---|---|---|---|
+| GET | `/api/runs` | `?view=needs_you\|active\|done\|all&limit=50&offset=0&repo=&group=&q=` | `{"runs":[Run…], "total": n, "next_offset": n\|null, "next3":[Run×≤3], "groups":[Group…], "stats":{…}}`. With no `view`, behaves as before (all runs). |
+| POST | `/api/batches` | `{repo_path, title, tasks:[str…], base_branch?, agent?, budget_usd?, test_cmd?}` | `{"group_key", "runs":[ids]}` (201). Creates one run per task, grouped. |
+| POST | `/api/groups/<group_key>/<op>` | op = `accept_ready` \| `reject_failed` \| `restart_interrupted` | `{"done":[ids], "skipped":[{"id","reason"}]}` |
+| POST | `/api/runs/<id>/accept` | `{mode, override_reason?}` | 409 with the violations when policy blocks; with a non-empty `override_reason` it merges and records an audit entry |
+| GET | `/api/policy` | `?repo=<path>` | `{"policy":{…}, "rules":[{"rule","value"}], "sources":[paths], "sha"}` |
+| GET | `/api/audit` | `?run_id=&limit=` | `{"entries":[{"ts","actor","run_id","action","detail"}]}` |
+
+`Group`: `{"group_key","title","total","needs_you","ready","failed","active","done","top_score","latest"}`.
+`next3`: the three highest-attention runs that need you (attention_score ≥ 60), same order as the needs_you view.

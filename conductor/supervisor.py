@@ -31,6 +31,10 @@ import uuid
 from pathlib import Path
 
 from . import gitops, states
+from . import cron
+from . import policy as pol
+from . import workflows as wfl
+from .guard import LiveGuard
 from .agents import stream as streamparse
 from .agents.base import extract_question
 from .agents.registry import get_adapter
@@ -51,6 +55,10 @@ class Supervisor:
         self._locks_guard = threading.Lock()
         self._children: dict[int, subprocess.Popen] = {}  # runner pid -> Popen (to reap)
         self._testing: set[int] = set()
+        self._guards: dict[int, LiveGuard] = {}  # run id -> live policy state
+        # Set by the service: creates a run from a schedule (same validation
+        # and policy as a run created by hand).
+        self.create_run_cb = None
         self._test_procs: dict[int, subprocess.Popen] = {}  # run id -> running test cmd
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -127,6 +135,7 @@ class Supervisor:
                 threading.Thread(target=self._run_tests, args=(run["id"],),
                                  name=f"tests-{run['id']}", daemon=True).start()
         self._schedule()
+        self._fire_due_schedules()
         now = time.time()
         if now - self._last_slow > 5:
             self._last_slow = now
@@ -143,13 +152,27 @@ class Supervisor:
                 del self._children[pid]
 
     # -------------------------------------------------------------- schedule
+    def policy_for(self, run: dict) -> pol.Policy:
+        """The run's effective policy (stored at create; older runs: loaded now)."""
+        if run.get("policy"):
+            return pol.Policy.from_dict(run["policy"])
+        return pol.load(self.cfg.home, Path(run["repo_path"]))[0]
+
     def _schedule(self) -> None:
-        active = len(self.store.list(states.AGENT_ACTIVE))
+        running = self.store.list(states.AGENT_ACTIVE)
+        active = len(running)
+        per_repo: dict[str, int] = {}
+        for r in running:
+            per_repo[r["repo_path"]] = per_repo.get(r["repo_path"], 0) + 1
         for run in self.store.list([states.QUEUED]):  # oldest first
             if active >= self.cfg.max_parallel:
                 return
+            cap = self.policy_for(run).max_parallel_per_repo
+            if cap is not None and per_repo.get(run["repo_path"], 0) >= cap:
+                continue  # this repo is at its policy limit; others may still start
             if self._launch(run):
                 active += 1
+                per_repo[run["repo_path"]] = per_repo.get(run["repo_path"], 0) + 1
 
     def _launch(self, run: dict) -> bool:
         run_id = run["id"]
@@ -224,7 +247,9 @@ class Supervisor:
             raise RuntimeError(why)
         spec = adapter.build(prompt=prompt, session_id=session_id, resume=resume,
                              model=run.get("model"), budget_usd=budget,
-                             worktree=str(wt))
+                             worktree=str(wt),
+                             disallowed_tools=pol.claude_disallowed_tools(self.policy_for(run)))
+        self._guards[run_id] = LiveGuard()
 
         d = self.cfg.attempt_dir(run_id, attempt)
         d.mkdir(parents=True, exist_ok=True)
@@ -279,10 +304,14 @@ class Supervisor:
             self.store.update(run_id, stalled=1)
             self.store.add_event(run_id, "info",
                                  f"No output for {self.cfg.stall_secs}s: flagged as stalled")
-        if now - (run["attempt_started_at"] or now) > self.cfg.max_run_secs:
+        limit = self.cfg.max_run_secs
+        cap = self.policy_for(run).max_runtime_secs
+        if cap:
+            limit = min(limit, cap)
+        if now - (run["attempt_started_at"] or now) > limit and not run.get("error"):
             self.store.add_event(run_id, "error",
-                                 f"Exceeded max run time ({self.cfg.max_run_secs}s); stopping")
-            self.store.update(run_id, error=f"Timed out after {self.cfg.max_run_secs}s")
+                                 f"Exceeded max run time ({limit}s); stopping")
+            self.store.update(run_id, error=f"Timed out after {limit}s")
             _kill_group(pid)
 
     def _ingest(self, run: dict, d: Path) -> None:
@@ -302,8 +331,23 @@ class Supervisor:
         # Show paths relative to the worktree ("src/app.py", not the full path).
         # Only the parsed view changes; the transcript on disk stays verbatim.
         wt_prefix = (run.get("worktree_path") or "\0").rstrip("/") + "/"
+        guard = self._guards.setdefault(run["id"], LiveGuard())
+        policy = self.policy_for(run)
+        new_violations, kill_reason = [], None
         for raw in chunk.splitlines():
-            p = streamparse.parse_line(raw.decode("utf-8", "replace").replace(wt_prefix, ""))
+            line = raw.decode("utf-8", "replace")
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                obj = None
+            if isinstance(obj, dict):
+                for f in guard.inspect(obj, policy, run["agent"], run.get("worktree_path")):
+                    new_violations.append(f.violation)
+                    events.append(("error" if f.kill else "info",
+                                   f"Policy: {f.violation['detail']}", f.violation))
+                    if f.kill and not kill_reason:
+                        kill_reason = f.violation["detail"]
+            p = streamparse.parse_line(line.replace(wt_prefix, ""))
             events.extend(p.events)
             if p.activity:
                 fields["activity"] = p.activity
@@ -322,8 +366,15 @@ class Supervisor:
         fields["last_output_at"] = time.time()
         if run.get("stalled"):
             fields["stalled"] = 0
+        if new_violations:
+            fields["violations"] = (run.get("violations") or []) + new_violations
+        if kill_reason and not run.get("error"):
+            fields["error"] = f"Stopped by policy: {kill_reason}"
         self.store.ingest(run["id"], run["attempt"], run["stream_offset"] + len(chunk),
                           events, **fields)
+        if kill_reason and not run.get("error") and run.get("runner_pid"):
+            self.store.audit("conductor", "policy_kill", run["id"], {"reason": kill_reason})
+            _kill_group(run["runner_pid"])
 
     def _finish_attempt(self, run: dict, exit_info: dict, d: Path) -> None:
         run_id = run["id"]
@@ -380,6 +431,9 @@ class Supervisor:
             run = self.store.get(run_id)
             wt = run["worktree_path"]
             cmd = run.get("test_cmd")
+            step = _current_step(run)
+            if step is not None and step.tests == "skip":
+                cmd = ""  # this workflow step does not run the tests
             if cmd is None:
                 cmd = gitops.detect_test_cmd(wt) or ""
                 self.store.update(run_id, test_cmd=cmd)
@@ -398,10 +452,11 @@ class Supervisor:
             self.store.update(run_id, test_status=status, test_output=output[-TEST_OUTPUT_LIMIT:])
             self._update_diff_info(self.store.get(run_id))
             now = time.time()
-            self.store.transition(run_id, states.TESTING, states.FINISHED,
-                                  f"Ready for review (tests: {status})",
-                                  activity=f"Finished (tests {status})" if status != "none"
-                                  else "Finished", activity_at=now, finished_at=now)
+            if self.store.transition(run_id, states.TESTING, states.FINISHED,
+                                     f"Ready for review (tests: {status})",
+                                     activity=f"Finished (tests {status})" if status != "none"
+                                     else "Finished", activity_at=now, finished_at=now):
+                self._advance_workflow(run_id)
         except Exception as e:
             log.exception("tests failed for run %s", run_id)
             self.store.update(run_id, test_status="failed", test_output=f"conductor error: {e}")
@@ -411,6 +466,117 @@ class Supervisor:
             self._testing.discard(run_id)
             self._test_procs.pop(run_id, None)
 
+    # ------------------------------------------------------------ workflows
+    def _advance_workflow(self, run_id: int) -> None:
+        """After a workflow step is done: start the next step, wait at its
+        gate, or stop. A step is the next attempt on the same run, in the
+        same worktree and branch, so each step builds on the last one's work.
+        """
+        with self.lock(run_id):
+            run = self.store.get(run_id)
+            if run["state"] != states.FINISHED or not run.get("workflow_def"):
+                return
+            wf = wfl.Workflow.from_dict(run["workflow_def"])
+            i = run.get("workflow_step") or 0
+            step, last = wf.steps[i], i + 1 >= len(wf.steps)
+            if last:
+                self.store.add_event(run_id, "info",
+                                     f'Workflow "{wf.name}" complete ({len(wf.steps)} steps)')
+                return
+            if step.tests == "required" and run.get("test_status") not in ("passed", "none") \
+                    and step.on_fail == "stop":
+                self.store.add_event(run_id, "info", f'Workflow stopped at step "{step.id}": '
+                                     "tests must pass before the next step")
+                return
+            if states.blocking_violations(run):
+                self.store.add_event(run_id, "info", f'Workflow stopped at step "{step.id}": '
+                                     "policy findings need a human")
+                return
+            nxt = wf.steps[i + 1]
+            if step.gate == "approve":
+                q = (f'Step {i + 1} of {len(wf.steps)} ("{step.id}") is done. Approve to start '
+                     f'step {i + 2} ("{nxt.id}"). Reply "approve", or add instructions for '
+                     "the next step; reject the run to stop here.")
+                if self.store.transition(run_id, states.FINISHED, states.WAITING_INPUT,
+                                         f'Waiting for approval to start "{nxt.id}"',
+                                         question=q, pre_attempt="workflow_gate",
+                                         activity="Waiting for your approval",
+                                         activity_at=time.time()):
+                    self.store.add_event(run_id, "question", q)
+                return
+            self.queue_workflow_step(run, wf, i + 1)
+
+    def queue_workflow_step(self, run: dict, wf: "wfl.Workflow", index: int,
+                            note: str | None = None, from_state: str = states.FINISHED) -> bool:
+        prompt = wfl.render(wf, index, run["task"], run.get("summary"))
+        if note:
+            prompt += f"\n\nReviewer note before this step: {note}"
+        step = wf.steps[index]
+        return self.store.transition(
+            run["id"], from_state, states.QUEUED,
+            f'Workflow step {index + 1} of {len(wf.steps)}: "{step.id}"',
+            workflow_step=index, next_prompt=prompt,
+            resume=int(step.session == "continue" and bool(run.get("session_id"))),
+            pre_attempt=None, question=None, test_status=None, error=None,
+            activity=f'Queued: step "{step.id}"', activity_at=time.time())
+
+    # ------------------------------------------------------------ schedules
+    def _fire_due_schedules(self) -> None:
+        """Fire schedules whose time has come. Each fire is claimed with a
+        compare-and-set on next_fire_at first, so it happens exactly once
+        even across a restart."""
+        if self.create_run_cb is None:
+            return
+        now = time.time()
+        for sc in self.store.list_schedules(due_before=now):
+            try:
+                self._fire_schedule(sc, now)
+            except Exception:  # one broken schedule must not stop the others
+                log.exception("schedule %s failed", sc["id"])
+
+    def _fire_schedule(self, sc: dict, now: float) -> None:
+        due = sc["next_fire_at"]
+        if sc["kind"] == "cron":
+            new_next = cron.parse(sc["cron"]).next_after(now)
+            late = now - due > 120  # missed while the conductor was down
+            if late and sc["catch_up"] == "skip":
+                self.store.claim_schedule(sc["id"], due, new_next,
+                                          last_note="Missed while down; catch-up is off")
+                return
+            reason = "Caught up after downtime" if late else "On schedule"
+        else:  # on_change: next_fire_at is the next poll
+            new_next = now + max(10, sc["poll_secs"] or 60)
+            try:
+                sha = gitops.rev_parse(sc["repo_path"], sc["watch_ref"])
+            except gitops.GitError as e:
+                self.store.claim_schedule(sc["id"], due, new_next, last_note=f"Cannot read "
+                                          f"{sc['watch_ref']}: {e}")
+                return
+            if sha == sc.get("last_seen_sha") or not sc.get("last_seen_sha"):
+                # first poll just records where the ref is; no change, no run
+                self.store.claim_schedule(sc["id"], due, new_next, last_seen_sha=sha)
+                return
+            reason = f"{sc['watch_ref']} moved to {sha[:10]}"
+        if sc["overlap"] == "skip" and sc.get("last_run_id"):
+            prev = self.store.get(sc["last_run_id"])
+            if prev and prev["state"] in (states.QUEUED, *states.ACTIVE, states.WAITING_INPUT):
+                extra = {"last_seen_sha": sha} if sc["kind"] == "on_change" else {}
+                self.store.claim_schedule(sc["id"], due, new_next, **extra,
+                                          last_note=f"Skipped: run #{prev['id']} still active")
+                return
+        extra = {"last_seen_sha": sha} if sc["kind"] == "on_change" else {}
+        if not self.store.claim_schedule(sc["id"], due, new_next, last_fired_at=now,
+                                         last_note=reason, **extra):
+            return  # someone else fired it
+        try:
+            run = self.create_run_cb(sc, reason)
+        except Exception as e:
+            self.store.update_schedule(sc["id"], last_note=f"Could not create run: {e}")
+            return
+        self.store.update_schedule(sc["id"], last_run_id=run["id"])
+        self.store.audit(f"schedule:{sc['id']}", "scheduled_run", run["id"],
+                         {"schedule": sc["name"], "reason": reason})
+
     # ------------------------------------------------------- derived info
     def _update_diff_info(self, run: dict) -> None:
         wt, base = run.get("worktree_path"), run.get("base_commit")
@@ -418,12 +584,23 @@ class Supervisor:
             return
         try:
             base = gitops.review_base(wt, run["base_branch"], fallback=base)
+            ranges = gitops.changed_ranges(wt, base)
+            # Pre-merge policy check on exactly what would be merged.
+            findings = pol.check_diff(self.policy_for(run), gitops.diff_files(wt, base),
+                                      run["base_branch"])
+            now = time.time()
             self.store.update(
                 run["id"], diff_stat=gitops.diff_stat(wt, base),
                 changed_files=gitops.changed_files(wt, base),
-                changed_ranges={"base": base, "files": gitops.changed_ranges(wt, base)},
+                changed_ranges={"base": base, "files": ranges},
                 merge_check={**gitops.merge_check(run["repo_path"], run["base_branch"],
-                                                  run["branch"]), "checked_at": time.time()})
+                                                  run["branch"]), "checked_at": now,
+                             "policy": [{**f, "at": now} for f in findings]})
+            self.store.set_run_files(run["id"], run["repo_path"], base, ranges)
+            if findings:
+                self.store.add_event(run["id"], "info", "Policy: " + "; ".join(
+                    f["detail"] for f in findings[:3]) + (" …" if len(findings) > 3 else ""),
+                    {"policy": findings})
         except gitops.GitError as e:
             log.warning("diff info for run %s: %s", run["id"], e)
 
@@ -440,6 +617,8 @@ class Supervisor:
                 if files != (run.get("changed_files") or []) or \
                         ranges != run.get("changed_ranges"):
                     self.store.update(run["id"], changed_files=files, changed_ranges=ranges)
+                    self.store.set_run_files(run["id"], run["repo_path"], base,
+                                             ranges["files"])
 
     def _refresh_merge_checks(self) -> None:
         """The target branch moves when other runs merge; re-check finished runs."""
@@ -448,13 +627,16 @@ class Supervisor:
                 target = gitops.rev_parse(run["repo_path"], run["base_branch"])
             except gitops.GitError:
                 continue
-            mc = run.get("merge_check") or {}
-            if mc.get("target_commit") != target:
+            old = run.get("merge_check") or {}
+            if old.get("target_commit") != target:
                 try:
                     mc = gitops.merge_check(run["repo_path"], run["base_branch"], run["branch"])
                 except gitops.GitError:
                     continue
-                self.store.update(run["id"], merge_check={**mc, "checked_at": time.time()})
+                # The policy findings depend on the run's own diff, not the
+                # target: keep them.
+                self.store.update(run["id"], merge_check={**mc, "checked_at": time.time(),
+                                                          "policy": old.get("policy") or []})
                 if mc.get("conflicts"):
                     self.store.add_event(run["id"], "info",
                                          f"{run['base_branch']} moved; now conflicts in "
@@ -532,6 +714,14 @@ class Supervisor:
 
 
 # ---------------------------------------------------------------- helpers
+def _current_step(run: dict):
+    if not run.get("workflow_def"):
+        return None
+    wf = wfl.Workflow.from_dict(run["workflow_def"])
+    i = run.get("workflow_step") or 0
+    return wf.steps[i] if i < len(wf.steps) else None
+
+
 def _pkg_root() -> str:
     return str(Path(__file__).resolve().parent.parent)
 

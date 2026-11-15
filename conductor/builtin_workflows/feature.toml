@@ -1,0 +1,82 @@
+# Built-in workflow: implement a feature, cover it with tests, review the
+# diff with fresh eyes (human approval before docs), then document it.
+name = "feature"
+description = "Implement, add tests, self-review (approval gate), document"
+
+[[steps]]
+id = "implement"
+tests = "required"
+prompt = '''
+{task}
+
+You are working unattended in this repository's git worktree; nobody will
+answer questions, so make reasonable decisions and note them in your summary.
+Before changing anything, read the code around the change and follow the
+project's existing conventions (layout, naming, error handling, style). Make
+the smallest complete change that delivers the task: no unrelated refactors,
+no drive-by reformatting, no new dependencies unless the task needs them.
+Run the project's test suite before you finish and make sure it passes.
+End with a short summary: what you changed, where, and any decisions or
+open questions.
+'''
+
+[[steps]]
+id = "add-tests"
+tests = "required"
+prompt = '''
+Now add or extend automated tests for what you just built, using the
+project's existing test framework and conventions.
+
+Cover the main behaviour, the edge cases and the error paths of the change
+(empty input, boundaries, invalid values, failure of collaborators). Tests
+must be deterministic: no network, no sleeps, no dependence on wall-clock
+time or test order. Do not weaken, skip or delete existing tests. If writing
+a test reveals a bug in the implementation, fix the implementation. Run the
+full test suite and make sure it passes. Summarize which behaviours are now
+covered.
+'''
+
+[[steps]]
+id = "self-review"
+tests = "required"
+gate = "approve"
+session = "fresh"
+prompt = '''
+You are reviewing work another agent did in this worktree for the task
+below. Read the full diff against the base branch (for example with
+`git diff` against the merge base) and check it critically against the task.
+
+Task:
+{task}
+
+Summary from the previous step:
+{previous_summary}
+
+Look for: requirements of the task that are missing or only partly done;
+bugs, unhandled edge cases and error paths; misleading names or comments;
+leftover debugging code, dead code or TODOs; changes unrelated to the task;
+security problems (injection, unsafe file or shell handling, secrets); and
+tests that do not really assert the behaviour. Fix every real problem you
+find, directly in the code. Do NOT add new features or widen the scope.
+Run the test suite and make sure it passes. Finish with a review summary: the
+problems you found and fixed, and anything a human reviewer should look at.
+'''
+
+[[steps]]
+id = "docs"
+tests = "optional"
+prompt = '''
+Update the documentation for this change, where the project keeps it.
+
+Task:
+{task}
+
+Look for a README, a docs/ directory, docstrings or help text of the
+changed public interfaces, configuration references and a CHANGELOG (or
+similar release notes). Update what is now out of date and document new
+behaviour, options and usage, matching the existing tone and format. If the
+project keeps a changelog, add a concise entry under the unreleased section
+in its existing format. Do not create new documentation files or a changelog
+if the project has none, and do not change code behaviour in this step.
+Summarize which documents you updated.
+'''

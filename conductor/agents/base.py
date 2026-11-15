@@ -55,8 +55,12 @@ class Adapter(ABC):
     @abstractmethod
     def build(self, *, prompt: str, session_id: str, resume: bool,
               model: str | None, budget_usd: float | None,
-              worktree: str) -> LaunchSpec:
-        """Command line + env for one attempt, run with cwd=worktree."""
+              worktree: str, disallowed_tools: list[str] | None = None) -> LaunchSpec:
+        """Command line + env for one attempt, run with cwd=worktree.
+
+        ``disallowed_tools`` are permission rules from the repository policy
+        (e.g. ``Bash(git push:*)``) that the agent itself must refuse.
+        """
 
     @abstractmethod
     def available(self) -> tuple[bool, str]:

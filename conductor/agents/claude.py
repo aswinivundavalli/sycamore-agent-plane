@@ -19,7 +19,7 @@ class ClaudeAdapter(Adapter):
 
     def build(self, *, prompt: str, session_id: str, resume: bool,
               model: str | None, budget_usd: float | None,
-              worktree: str) -> LaunchSpec:
+              worktree: str, disallowed_tools: list[str] | None = None) -> LaunchSpec:
         argv = [self.binary() or "claude", "-p", prompt,
                 "--output-format", "stream-json", "--verbose",
                 "--dangerously-skip-permissions",
@@ -32,6 +32,11 @@ class ClaudeAdapter(Adapter):
             argv += ["--model", model]
         if budget_usd:
             argv += ["--max-budget-usd", f"{float(budget_usd):g}"]
+        if disallowed_tools:
+            # Deny rules from the repository policy. Claude Code applies deny
+            # rules even with permission prompts skipped, so the agent cannot
+            # run these at all. Kept last: the flag takes a variable list.
+            argv += ["--disallowedTools", *disallowed_tools]
         # Lets --dangerously-skip-permissions work when running as root.
         return LaunchSpec(argv=argv, env={"IS_SANDBOX": "1"})
 

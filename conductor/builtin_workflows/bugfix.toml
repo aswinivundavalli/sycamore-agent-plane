@@ -1,0 +1,49 @@
+# Built-in workflow: reproduce a bug with a failing test, fix it, then look
+# for the same mistake elsewhere.
+name = "bugfix"
+description = "Reproduce with a failing test, fix, look for the pattern elsewhere"
+
+[[steps]]
+id = "reproduce"
+tests = "skip"
+prompt = '''
+Bug report:
+{task}
+
+You are working unattended in this repository's git worktree. In this step,
+do NOT fix the bug yet. First find the code responsible and understand the
+cause. Then write the smallest automated test, in the project's existing test
+framework and conventions, that demonstrates the bug: it must fail now for
+the reason described in the report and pass once the bug is fixed. Run that
+test and confirm it fails the expected way (not because of a typo or import
+error). If you cannot reproduce the bug, say so plainly and explain what you
+tried. End with a summary: the root cause, where it is, and the name of the
+failing test.
+'''
+
+[[steps]]
+id = "fix"
+tests = "required"
+prompt = '''
+Now fix the bug so that the test you wrote passes.
+
+Fix the root cause rather than the symptom, with the smallest change that is
+correct. Do not modify the reproducing test to make it pass (unless it was
+genuinely wrong, and then explain why), and do not weaken, skip or delete
+other tests. Run the full test suite and make sure everything passes.
+Summarize the cause and the fix.
+'''
+
+[[steps]]
+id = "verify"
+tests = "required"
+prompt = '''
+Look for the same bug pattern elsewhere in the codebase: other callers of the
+code you fixed, copies of the same logic, and similar code with the same
+mistake. Fix any clear instances that are in the same scope as this bug and
+add tests for them; list anything uncertain or larger instead of changing it.
+Run the full test suite and make sure it passes.
+
+End with a final summary for the reviewer: the root cause, the fix, the test
+that covers it, other places you fixed, and places that may need a follow-up.
+'''

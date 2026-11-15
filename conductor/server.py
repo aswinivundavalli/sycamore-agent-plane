@@ -30,6 +30,16 @@ ROUTES: list[tuple[str, re.Pattern, str]] = [
     ("POST", re.compile(r"^/api/runs/(\d+)/(answer|restart|cancel|accept|reject|"
                         r"resolve_conflicts|retest)$"), "action"),
     ("GET", re.compile(r"^/api/repo$"), "repo"),
+    ("POST", re.compile(r"^/api/batches$"), "create_batch"),
+    ("POST", re.compile(r"^/api/groups/([^/]+)/(accept_ready|reject_failed|"
+                        r"restart_interrupted)$"), "group_op"),
+    ("GET", re.compile(r"^/api/policy$"), "policy"),
+    ("GET", re.compile(r"^/api/audit$"), "audit"),
+    ("GET", re.compile(r"^/api/workflows$"), "workflows"),
+    ("GET", re.compile(r"^/api/schedules$"), "list_schedules"),
+    ("POST", re.compile(r"^/api/schedules$"), "create_schedule"),
+    ("POST", re.compile(r"^/api/schedules/(\d+)/(pause|resume|run_now|delete)$"),
+     "schedule_op"),
     ("GET", re.compile(r"^/api/stats$"), "stats"),
 ]
 
@@ -79,7 +89,7 @@ def make_handler(svc: Service):
                             *match.groups(), query=parse_qs(url.query))
                         return self._json(status, obj)
                     except ActionError as e:
-                        return self._json(e.status, {"error": str(e)})
+                        return self._json(e.status, {"error": str(e), **e.data})
                     except Exception as e:  # noqa: BLE001
                         log.exception("handler %s failed", name)
                         return self._json(500, {"error": f"internal error: {e}"})
@@ -114,7 +124,39 @@ def make_handler(svc: Service):
 
         # -- handlers ------------------------------------------------------
         def h_list_runs(self, query):
-            return 200, svc.list_view()
+            one = lambda k, d=None: query.get(k, [d])[0]  # noqa: E731
+            return 200, svc.list_view(view=one("view"), limit=int(one("limit", 50)),
+                                      offset=int(one("offset", 0)), repo=one("repo") or None,
+                                      group=one("group") or None, q=one("q") or None)
+
+        def h_create_batch(self, query):
+            out = svc.create_batch(self._body())
+            log.info("created batch %s: %d runs", out["group_key"], len(out["runs"]))
+            return 201, out
+
+        def h_group_op(self, group_key, op, query):
+            from urllib.parse import unquote
+            return 200, svc.group_op(unquote(group_key), op)
+
+        def h_policy(self, query):
+            return 200, svc.policy_info(query.get("repo", [""])[0])
+
+        def h_workflows(self, query):
+            return 200, svc.workflows(query.get("repo", [None])[0] or None)
+
+        def h_list_schedules(self, query):
+            return 200, svc.list_schedules()
+
+        def h_create_schedule(self, query):
+            return 201, svc.create_schedule(self._body())
+
+        def h_schedule_op(self, sid, op, query):
+            return 200, svc.schedule_op(int(sid), op)
+
+        def h_audit(self, query):
+            run_id = query.get("run_id", [None])[0]
+            return 200, svc.audit_entries(int(run_id) if run_id else None,
+                                          int(query.get("limit", [200])[0]))
 
         def h_create_run(self, query):
             run = svc.create_run(self._body())
@@ -141,7 +183,7 @@ def make_handler(svc: Service):
             elif action == "cancel":
                 svc.cancel(run_id)
             elif action == "accept":
-                svc.accept(run_id, body.get("mode", "merge"))
+                svc.accept(run_id, body.get("mode", "merge"), body.get("override_reason"))
             elif action == "reject":
                 svc.reject(run_id)
             elif action == "resolve_conflicts":

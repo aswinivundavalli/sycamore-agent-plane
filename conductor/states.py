@@ -42,7 +42,7 @@ TRANSITIONS = {
     RUNNING: {TESTING, WAITING_INPUT, FAILED, INTERRUPTED, CANCELLED},
     WAITING_INPUT: {QUEUED, REJECTED, CANCELLED},
     TESTING: {FINISHED, INTERRUPTED, CANCELLED},
-    FINISHED: {ACCEPTED, REJECTED, QUEUED, TESTING},
+    FINISHED: {ACCEPTED, REJECTED, QUEUED, TESTING, WAITING_INPUT},  # waiting: workflow gate
     FAILED: {QUEUED, REJECTED, ACCEPTED},
     INTERRUPTED: {QUEUED, REJECTED},
     ACCEPTED: set(),
@@ -55,14 +55,40 @@ def can_transition(src: str, dst: str) -> bool:
     return dst in TRANSITIONS.get(src, set())
 
 
+# Runs scoring at or above this need a human; below it, they are just working.
+NEEDS_YOU = 60
+
+
+BLOCKING_ACTIONS = ("kill", "block", "approval")
+
+
+def blocking_violations(run: dict) -> list[dict]:
+    """Policy findings that need a human: the agent was stopped (kill), the
+    merge is blocked (block), or the merge needs a recorded approval
+    (approval). Live findings are in ``violations``; pre-merge findings from
+    the diff are in ``merge_check.policy``."""
+    found = list(run.get("violations") or [])
+    found += list((run.get("merge_check") or {}).get("policy") or [])
+    return [v for v in found if v.get("action") in BLOCKING_ACTIONS]
+
+
 def attention(run: dict) -> tuple[int, str]:
     """Rank how urgently a run needs the human. Higher = look at it first.
 
-    Returns (score, reason). Score 0 means "nothing for you to do".
+    Returns (score, reason). Score 0 means "nothing for you to do". Ties
+    within a score are broken by how long the run has been waiting
+    (``attention_since``) and how big its change is: see ``Store.page``.
     """
     s = run["state"]
     if s == WAITING_INPUT:
         return 100, "Agent is blocked on your answer"
+    blocking = blocking_violations(run) if s not in TERMINAL else []
+    if blocking:
+        v = blocking[0]
+        prefix = {"kill": "Stopped by policy", "approval": "Needs approval"}.get(
+            v.get("action"), "Policy violation")
+        more = f" (+{len(blocking) - 1} more)" if len(blocking) > 1 else ""
+        return 95, f"{prefix}: {v.get('detail') or v.get('rule')}"[:120] + more
     if s == FINISHED:
         mc = run.get("merge_check") or {}
         if mc.get("markers"):
