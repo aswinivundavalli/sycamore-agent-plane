@@ -138,6 +138,15 @@ class WorkersTest(unittest.TestCase):
         run = self.wait_for(rid, states.FAILED, timeout=40)
         self.assertIn("Stopped by policy", run["error"])
 
+    def test_shell_write_to_a_forbidden_path_is_stopped_on_a_worker(self):
+        # The worktree is on the worker; its heartbeat reports the changed
+        # files, and the coordinator applies the path rules to them.
+        self.start_worker()
+        rid = self.create("Loosen [[fake:sh]]\nmkdir -p .conductor && echo x > "
+                          ".conductor/policy.toml\n[[/fake]] [[fake:sh]]\nsleep 40\n[[/fake]]")
+        run = self.wait_for(rid, states.FAILED, timeout=35)
+        self.assertIn("Stopped by policy: edits .conductor/policy.toml", run["error"])
+
     def test_parallel_runs_spread_across_two_workers(self):
         self.start_worker("a", capacity=1)
         self.start_worker("b", capacity=1)

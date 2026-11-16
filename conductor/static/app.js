@@ -1190,17 +1190,20 @@ function policyBadge(action) {
   return '<span class="pbadge ' + b[1] + '">' + esc(b[0]) + "</span>";
 }
 
-/* merge_check.policy (from the diff) + run.violations (live), de-duplicated, worst first. */
+/* run.violations (live) + merge_check.policy (from the diff), de-duplicated
+   (a file caught live is in the diff too: shown once, as the live finding),
+   worst first. */
 function policyFindings(run, mc) {
   const out = [], seen = new Set();
   const add = (v, src) => {
     if (!v) return;
-    const k = v.rule + "|" + v.detail + "|" + v.action;
+    const k = v.path ? v.rule + "|path|" + v.path : v.rule + "|" + v.detail + "|" + v.action;
     if (seen.has(k)) return;
     seen.add(k); out.push(Object.assign({ src }, v));
   };
+  (run.violations || []).forEach((v) => add(v, (v.how ? v.how + " · " : "") +
+    (v.at ? "seen " + relTime(v.at) : "while running")));
   ((mc && mc.policy) || []).forEach((v) => add(v, "pre-merge check"));
-  (run.violations || []).forEach((v) => add(v, v.at ? "seen " + relTime(v.at) : "while running"));
   out.sort((a, b) => (POLICY_RANK[a.action] ?? 9) - (POLICY_RANK[b.action] ?? 9));
   return out;
 }

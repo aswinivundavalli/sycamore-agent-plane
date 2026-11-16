@@ -89,9 +89,13 @@ Served by `conductor/server.py`; the UI in `conductor/static/` is the only clien
   "group_title": "Dependency bumps",
   "policy": {...},                  // effective policy (see GET /api/policy)
   "policy_sha": "a1b2c3d4e5f6",
-  "violations": [                   // live + pre-merge findings
-    {"rule": "forbidden_path", "detail": "edits .github/workflows/ci.yml", "action": "block", "at": 1731690000}
-  ],                                // action: kill (agent was stopped) | block (merge blocked) |
+  "violations": [                   // live findings (pre-merge ones are in merge_check.policy)
+    {"rule": "forbidden_path", "detail": "edits .github/workflows/ci.yml (forbidden: .github/**)",
+     "action": "kill", "at": 1731690000, "path": ".github/workflows/ci.yml",
+     "how": "found in the worktree after `mkdir -p .github/workflows && cat > …`"}
+  ],                                // path/how: set for path findings; a path stopped live is
+                                    //   counted once with the same path in merge_check.policy
+                                    // action: kill (agent was stopped) | block (merge blocked) |
                                     //         approval (needs an override reason) | flag (informational)
   "merge_check": {..., "policy": [/* same shape as violations, from the diff */]},
   "actions": [..., "accept_override"]   // when policy blocks a plain accept

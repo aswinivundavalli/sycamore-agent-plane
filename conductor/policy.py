@@ -624,6 +624,7 @@ def check_diff(policy: Policy, files: list[dict], target_branch: str) -> list[di
         found = _path_finding(policy, f.get("path", ""))
         if found:
             v(*found)
+            out[-1]["path"] = f.get("path", "")
     n_files = len(files)
     total = sum(_lines(f) for f in files)
     if policy.max_files is not None and n_files > policy.max_files:

@@ -386,6 +386,55 @@ class Supervisor:
         if kill_reason and not run.get("error"):
             self.store.audit("conductor", "policy_kill", run["id"], {"reason": kill_reason})
             self.kill(run)
+        elif guard.scan_due:
+            # A tool that can write just returned: check what is actually in
+            # the worktree now (once per chunk, however many calls it held).
+            after, guard.scan_due = guard.scan_after, False
+            self._scan_worktree(self.store.get(run["id"]), guard, after)
+
+    def _scan_worktree(self, run: dict, guard: LiveGuard, after: str = "") -> None:
+        """Local runs only: a remote run's worktree is on its worker, which
+        reports its changed files with every heartbeat (``Fleet.heartbeat``)."""
+        wt = run.get("worktree_path")
+        if not wt or not run.get("base_commit") or run["state"] != states.RUNNING:
+            return
+        try:
+            if guard.base is None:
+                guard.base = gitops.review_base(wt, run["base_branch"],
+                                                fallback=run["base_commit"])
+            files = gitops.changed_files(wt, guard.base)
+        except gitops.GitError:
+            return
+        self.enforce_paths(run, files, after)
+
+    def enforce_paths(self, run: dict, files: list[str], after: str = "") -> None:
+        """Apply the policy's path rules to the files a running agent has
+        actually changed, whatever wrote them, and act on the result
+        (``kill`` stops the run now). Called after each tool call that can
+        write (local runs), from the periodic refresh, and from worker
+        heartbeats (remote runs)."""
+        with self.lock(run["id"]):
+            run = self.store.get(run["id"])
+            if run is None or run["state"] != states.RUNNING:
+                return
+            guard = self._guards.setdefault(run["id"], LiveGuard())
+            known = {v.get("path") for v in run.get("violations") or [] if v.get("path")}
+            findings = guard.check_files(files, self.policy_for(run), known, after)
+            if not findings:
+                return
+            said = [f"{f.violation['detail']}, {f.violation['how']}" for f in findings]
+            for f, text in zip(findings, said):
+                self.store.add_event(run["id"], "error" if f.kill else "info",
+                                     f"Policy: {text}", f.violation)
+            fields = {"violations": (run.get("violations") or [])
+                      + [f.violation for f in findings]}
+            kill = next((t for f, t in zip(findings, said) if f.kill), None)
+            if kill and not run.get("error"):
+                fields["error"] = f"Stopped by policy: {kill}"
+            self.store.update(run["id"], **fields)
+            if kill and not run.get("error"):
+                self.store.audit("conductor", "policy_kill", run["id"], {"reason": kill})
+                self.kill(run)
 
     def _finish_attempt(self, run: dict, exit_info: dict, d: Path) -> None:
         run_id = run["id"]
@@ -634,6 +683,9 @@ class Supervisor:
                     ranges = {"base": base, "files": gitops.changed_ranges(wt, base)}
                 except gitops.GitError:
                     continue
+                # Backstop for the check after each tool call: anything that
+                # wrote without a tool result (a background process, say).
+                self.enforce_paths(run, files)
                 if files != (run.get("changed_files") or []) or \
                         ranges != run.get("changed_ranges"):
                     self.store.update(run["id"], changed_files=files, changed_ranges=ranges)

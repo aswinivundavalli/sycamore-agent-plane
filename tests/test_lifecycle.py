@@ -332,6 +332,21 @@ class LifecycleTest(LifecycleHarness):
         self.assertIn("Budget used up", run["error"])
         self.assertIsNone(run["runner_pid"])  # never launched
 
+    def test_a_branch_left_by_an_earlier_conductor_is_not_reused(self):
+        # A conductor whose data was reset starts numbering runs at 1 again,
+        # but the repository still has the old conductor/run-1.
+        self.git("switch", "-q", "-c", "conductor/run-1")
+        (self.repo / "stale.txt").write_text("old run's work\n")
+        self.git("add", "stale.txt")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "old")
+        old = self.git("rev-parse", "HEAD").strip()
+        self.git("switch", "-q", "-")
+        rid = self.create("New work [[fake:write new.txt]]n\n[[/fake]]")
+        self.assertEqual(self.store.get(rid)["branch"], "conductor/run-1-2")
+        run = self.wait_for(rid, states.FINISHED)
+        self.assertEqual(run["changed_files"], ["new.txt"])
+        self.assertEqual(self.git("rev-parse", "conductor/run-1").strip(), old)
+
     def test_skip_tests(self):
         rid = self.create("x [[fake:write x.txt]]x\n[[/fake]]", test_cmd="")
         self.assertEqual(self.wait_for(rid, states.FINISHED)["test_status"], "none")

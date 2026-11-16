@@ -67,9 +67,12 @@ def blocking_violations(run: dict) -> list[dict]:
     merge is blocked (block), or the merge needs a recorded approval
     (approval). Live findings are in ``violations``; pre-merge findings from
     the diff are in ``merge_check.policy``."""
-    found = list(run.get("violations") or [])
-    found += list((run.get("merge_check") or {}).get("policy") or [])
-    return [v for v in found if v.get("action") in BLOCKING_ACTIONS]
+    live = [v for v in run.get("violations") or [] if v.get("action") in BLOCKING_ACTIONS]
+    # A file stopped live is in the diff too: count it once.
+    seen = {v["path"] for v in live if v.get("path")}
+    pre = [v for v in (run.get("merge_check") or {}).get("policy") or []
+           if v.get("action") in BLOCKING_ACTIONS and not (v.get("path") and v["path"] in seen)]
+    return live + pre
 
 
 def attention(run: dict) -> tuple[int, str]:

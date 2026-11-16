@@ -266,7 +266,19 @@ class Service:
             activity_at=time.time(), policy=policy.to_dict(), policy_sha=sha,
             group_key=body.get("group_key"), group_title=body.get("group_title"),
             schedule_id=body.get("schedule_id"), **wf_fields)
-        self.store.update(run["id"], worktree_path=str(self.cfg.worktree_for(run["id"])))
+        extra = {}
+        if run["branch"] in info["branches"]:
+            # Left by an earlier conductor (its data was reset, the repository
+            # kept its branches). Reusing it would start this run on that
+            # run's work, so take the first free name instead.
+            taken, n = set(info["branches"]), 2
+            while f"{run['branch']}-{n}" in taken:
+                n += 1
+            extra["branch"] = f"{run['branch']}-{n}"
+            self.store.add_event(run["id"], "info", f"Branch {run['branch']} already exists in "
+                                 f"the repository; using {extra['branch']}")
+        self.store.update(run["id"], worktree_path=str(self.cfg.worktree_for(run["id"])),
+                          **extra)
         return self.get(run["id"])
 
     def answer(self, run_id: int, text: str) -> dict:

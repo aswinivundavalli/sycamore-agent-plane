@@ -108,7 +108,7 @@ A repository commits `.conductor/policy.toml`. Conductor-wide defaults live in `
 It is enforced at four points:
 1. **At create:** the budget is checked against the cap.
 2. **At launch:** forbidden commands and paths become Claude Code's own deny rules, which it applies even with permission prompts skipped. This was verified with a real run.
-3. **Live:** every streamed tool call is checked. An executed violation stops the agent; a refused attempt is recorded.
+3. **Live:** every streamed tool call is checked. After each call that can write, the files actually changed in the worktree are checked against the path rules too, because the deny rules only cover the agent's file tools. Real Claude Code writes with shell commands routinely (`cat > .github/workflows/ci.yml <<EOF`). An executed violation stops the agent; a refused attempt is recorded. Remote workers report changed files with every heartbeat (5 s).
 4. **Before merge:** the diff is checked. A blocked merge needs a written override reason, and the override goes to the audit log (`GET /api/audit`).
 
 Agents can never change `.conductor/`, the directory that holds their own policy.

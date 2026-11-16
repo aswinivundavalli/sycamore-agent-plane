@@ -13,7 +13,7 @@
 | Extension | Why |
 |---|---|
 | **Attention ranking** | The core complaint. Tiers run blocked > policy > ready > conflicts or failing > failed > wedged > working. Within a tier, the longest wait comes first. A "look at these next" strip and groups with bulk actions; the score is stored and indexed, so it pages at thousands. |
-| **Guardrails: repository policy** | Boundaries the team owns in `.conductor/policy.toml`, tighten-only across layers. Enforced at create, at launch (the agent's own deny rules), live (every tool call) and before merge (the diff). Overrides need a reason and are audited. Agents can't edit the policy itself. |
+| **Guardrails: repository policy** | Boundaries the team owns in `.conductor/policy.toml`, tighten-only across layers. Enforced at create, at launch (the agent's own deny rules), live (every tool call, and the worktree after each one, since real agents write with shell commands) and before merge (the diff). Overrides need a reason and are audited. Agents can't edit the policy itself. |
 | **Blocked on a question** | The question goes to the top with an answer box; the answer resumes the same session. |
 | **Conflict handling** | Overlap on the *same lines* is flagged while runs are live: in the field test, 1 pair flagged instead of 10. One click hands conflicts back to the agent; committed markers block the merge. |
 | **Repeatable workflows** | Define the five-step chain once and fire it at any task. The steps share one branch, with test requirements and approval gates. |

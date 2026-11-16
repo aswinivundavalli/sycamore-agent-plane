@@ -36,6 +36,54 @@ class FleetTest(LifecycleHarness):
         actions = [a["action"] for a in self.store.audit_log(rid)]
         self.assertIn("policy_kill", actions)
 
+    def test_forbidden_path_written_by_a_shell_command_is_stopped_live(self):
+        """The agent's deny rules and the per-call check only see its file
+        tools; a shell redirect names no path. The worktree check after each
+        tool call catches it while the agent is still running."""
+        self.set_repo_policy('[paths]\nforbidden = [".github/**"]\n')
+        started = time.time()
+        rid = self.create("Add CI [[fake:sh]]\necho ok > notes.txt\n[[/fake]] [[fake:sh]]\n"
+                          "mkdir -p .github/workflows && echo 'name: CI' > "
+                          ".github/workflows/ci.yml\n[[/fake]] [[fake:sh]]\nsleep 25\n[[/fake]]")
+        run = self.wait_for(rid, states.FAILED, timeout=20)
+        self.assertLess(time.time() - started, 20)  # stopped, not left to finish
+        self.assertIn("Stopped by policy: edits .github/workflows/ci.yml (forbidden: "
+                      ".github/**)", run["error"])
+        self.assertIn("after `mkdir -p .github/workflows", run["error"])
+        [v] = run["violations"]  # notes.txt is allowed: one finding, not two
+        self.assertEqual((v["rule"], v["action"], v["path"]),
+                         ("forbidden_path", "kill", ".github/workflows/ci.yml"))
+        self.assertEqual(run["attention_score"], 95)
+        self.assertIn("policy_kill", [a["action"] for a in self.store.audit_log(rid)])
+        # The diff check finds the same file; the board counts it once.
+        for _ in range(40):
+            self.sup.tick()
+            run = self.store.get(rid)
+            if (run.get("merge_check") or {}).get("policy"):
+                break
+            time.sleep(0.05)
+        self.assertEqual(run["merge_check"]["policy"][0]["path"], ".github/workflows/ci.yml")
+        self.assertEqual(len(states.blocking_violations(run)), 1)
+        self.assertEqual(run["attention_reason"], "Stopped by policy: edits "
+                         ".github/workflows/ci.yml (forbidden: .github/**)")
+
+    def test_shell_write_with_flag_action_is_recorded_once_and_blocks_the_merge(self):
+        self.set_repo_policy('[paths]\nforbidden = [".github/**"]\n'
+                             '[violation]\non_forbidden_path = "flag"\n')
+        rid = self.create("Add CI [[fake:sh]]\nmkdir -p .github && echo a > .github/ci.yml\n"
+                          "[[/fake]] [[fake:sh]]\necho b >> .github/ci.yml\n[[/fake]]")
+        run = self.wait_for(rid, states.FINISHED)
+        live = [v for v in run["violations"] if v.get("path") == ".github/ci.yml"]
+        self.assertEqual([v["action"] for v in live], ["flag"])  # reported once
+        self.assertIn("accept_override", self.svc.detail(rid)["actions"])
+
+    def test_the_policy_file_cannot_be_rewritten_by_a_shell_command(self):
+        # .conductor/** is forbidden by the built-in defaults.
+        rid = self.create("Loosen [[fake:sh]]\nmkdir -p .conductor && printf '[paths]\\n' > "
+                          ".conductor/policy.toml\n[[/fake]] [[fake:sh]]\nsleep 25\n[[/fake]]")
+        run = self.wait_for(rid, states.FAILED, timeout=20)
+        self.assertIn("edits .conductor/policy.toml", run["error"])
+
     def test_forbidden_path_blocks_merge_until_overridden(self):
         self.set_repo_policy('[paths]\nforbidden = ["secrets/**"]\n'
                              '[violation]\non_forbidden_path = "flag"\n')

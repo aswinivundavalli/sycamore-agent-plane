@@ -109,6 +109,9 @@ class Fleet:
                                   changed_ranges={"base": info.get("base"), "files": files},
                                   lease_expires_at=now + LEASE_SECS)
                 self.store.set_run_files(run["id"], run["repo_path"], info.get("base"), files)
+                # The worktree is on the worker: its heartbeat is how the path
+                # rules see writes the agent's tool calls don't name.
+                self.sup.enforce_paths(self.store.get(run["id"]), sorted(files))
         with self._lock:
             cmds, self._commands[wid] = self._commands[wid], []
         # Anything the worker still holds but the coordinator has finished
